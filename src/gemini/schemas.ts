@@ -44,6 +44,9 @@ export const RetrievedEvidenceInputSchema = z.object({
   title: z.string().min(1),
   sourceUrl: z.string().optional(),
   excerpt: z.string().min(1),
+  relevanceScore: z.number().optional(),
+  findingId: z.string().optional(),
+  trustLevel: z.string().optional(),
 });
 
 /**

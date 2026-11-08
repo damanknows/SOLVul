@@ -214,6 +214,25 @@ export async function generateSecurityExplanation(
     // Validate with strict Zod schema
     const validated = GeminiExplanationSchema.parse(parsedJson);
 
+    // Validate cited document IDs against retrieved evidence (must not fabricate citations)
+    const validDocIds = new Set(
+      input.retrievedEvidence.map((e) => e.documentId.toLowerCase().trim()),
+    );
+
+    for (const cf of validated.criticalFindings) {
+      if (Array.isArray(cf.evidenceReferenceIds)) {
+        cf.evidenceReferenceIds = cf.evidenceReferenceIds.filter((id) =>
+          validDocIds.has(String(id).toLowerCase().trim()),
+        );
+      }
+    }
+
+    if (Array.isArray(validated.evidenceReferences)) {
+      validated.evidenceReferences = validated.evidenceReferences.filter((ref) =>
+        validDocIds.has(String(ref.documentId).toLowerCase().trim()),
+      );
+    }
+
     // Integrity Check: ensure Gemini did not erase high-severity deterministic findings
     const disagreements: string[] = [];
     for (const finding of input.findings) {

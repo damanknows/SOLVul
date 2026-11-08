@@ -3,6 +3,7 @@ import { z } from "zod";
 import { decodeTransaction } from "../../../../solana/transactionDecoder";
 import { computeRiskScore } from "../../../../solana/transactionRiskScore";
 import { retrieve } from "../../../../rag/retriever";
+import { getSecurityEvidenceForTransaction } from "../../../../rag/service";
 import { generateSecurityExplanation } from "../../../../gemini/explanation";
 import { GeminiAnalysisInputSchema } from "../../../../gemini/schemas";
 import type { GeminiAnalysisInput } from "../../../../gemini/types";
@@ -76,6 +77,7 @@ export async function POST(req: Request): Promise<Response> {
 
     const { base64Tx, inspection } = parseResult.data;
     let analysisInput: GeminiAnalysisInput;
+    let ragResult: any = null;
 
     // 2. Authoritative STRS Evaluation
     if (base64Tx && base64Tx.trim()) {
@@ -83,8 +85,32 @@ export async function POST(req: Request): Promise<Response> {
       const decoded = await decodeTransaction(base64Tx);
       const assessment = computeRiskScore(decoded);
 
-      // Retrieve evidence from security corpus
-      const retrieved = await retrieve("security", (globalThis as any).vectorStore, 4);
+      // Retrieve evidence-backed security documentation tailored specifically to findings
+      try {
+        ragResult = await getSecurityEvidenceForTransaction(decoded, assessment.breakdown);
+      } catch {
+        const fallbackRetrieved = await retrieve("security", undefined, 4);
+        ragResult = {
+          allRetrieved: fallbackRetrieved.map((r) => ({
+            chunk: {
+              id: r.chunk.id,
+              documentId: r.chunk.id,
+              title: r.chunk.source,
+              sourceUrl: r.chunk.uri,
+              content: r.chunk.content,
+              documentType: "official_docs",
+              category: "solana",
+              trustLevel: "authoritative",
+              createdAt: new Date().toISOString(),
+              ingestedAt: new Date().toISOString(),
+            },
+            relevanceScore: r.score,
+          })),
+          evidence: [],
+          summary: "Fallback security references used.",
+          hasResults: fallbackRetrieved.length > 0,
+        };
+      }
 
       analysisInput = {
         transactionHash: base64Tx.slice(0, 32),
@@ -115,11 +141,14 @@ export async function POST(req: Request): Promise<Response> {
             "Simulation not requested in explanation endpoint; evaluation based on static bytecode and schema analysis.",
           ],
         },
-        retrievedEvidence: retrieved.map((r) => ({
+        retrievedEvidence: ragResult.allRetrieved.map((r: any) => ({
           documentId: r.chunk.id,
-          title: r.chunk.source,
-          sourceUrl: r.chunk.uri,
+          title: r.chunk.title,
+          sourceUrl: r.chunk.sourceUrl,
           excerpt: r.chunk.content,
+          relevanceScore: r.relevanceScore,
+          findingId: r.findingId,
+          trustLevel: r.chunk.trustLevel,
         })),
       };
     } else if (inspection) {
@@ -141,6 +170,8 @@ export async function POST(req: Request): Promise<Response> {
         isFallback: explanation.isFallback,
         authoritativeScore: analysisInput.riskScore,
         authoritativeRiskLevel: analysisInput.riskLevel,
+        findingEvidence: (ragResult as any)?.evidence || [],
+        ragSummary: (ragResult as any)?.summary || (analysisInput.retrievedEvidence.length > 0 ? "Evidence retrieved" : "No sufficiently relevant security documentation found."),
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     );

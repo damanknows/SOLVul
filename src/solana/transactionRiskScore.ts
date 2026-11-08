@@ -76,6 +76,8 @@ export interface RuleResult {
   suggestedAction?: string;
 }
 
+export type FindingBreakdown = RuleResult;
+
 /**
  * Output of the deterministic Solana Transaction Risk Score (STRS).
  */

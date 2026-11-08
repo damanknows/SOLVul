@@ -5,6 +5,20 @@
  * to support STRS findings and Gemini-style explanations.
  */
 
+export * from "./types";
+export * from "./config";
+export * from "./retrieval/retriever";
+export * from "./retrieval/queryBuilder";
+export * from "./retrieval/relevance";
+export * from "./storage/vectorStore";
+export * from "./storage/documentStore";
+export * from "./embeddings/embeddingService";
+export * from "./ingestion/ingest";
+export * from "./ingestion/chunker";
+export * from "./ingestion/documentLoader";
+export * from "./security/provenance";
+export * from "./security/untrustedContent";
+
 export interface Chunk {
   id: string;
   source: string;
@@ -30,7 +44,7 @@ export const SECURITY_CORPUS: Chunk[] = [
   {
     id: "sec-01",
     source: "Solana Security Guide",
-    uri: "https://docs.solana.com/developing/programming-model/transactions#signatures",
+    uri: "https://solana.com/docs/core/transactions#signatures",
     content:
       "Pre-sign firewalls inspect unsigned transactions before user authorization. A transaction lacking signatures is normal during pre-flight inspection and must not be penalized solely for being unsigned.",
     tags: ["unsigned", "pre-flight", "signatures"],
@@ -54,7 +68,7 @@ export const SECURITY_CORPUS: Chunk[] = [
   {
     id: "sec-04",
     source: "Solana System Program Guide",
-    uri: "https://docs.solana.com/developing/runtime-facilities/programs#system-program",
+    uri: "https://solana.com/docs/core/programs#system-program",
     content:
       "SystemProgram::Assign changes the program owner of an account. When an account owner is reassigned to an arbitrary program, that program obtains full write and debit authority over the account, effectively surrendering ownership.",
     tags: ["system", "assign", "reassignment", "ownership", "VS-06-ASSIGN"],
@@ -62,7 +76,7 @@ export const SECURITY_CORPUS: Chunk[] = [
   {
     id: "sec-05",
     source: "Solana Program Verification Guide",
-    uri: "https://docs.solana.com/developing/on-chain-programs/overview",
+    uri: "https://solana.com/docs/core/programs",
     content:
       "Unverified program interaction indicates that the program ID is not among widely recognized ecosystem programs. An unverified program is not automatically malicious, but users must exercise caution and verify the source.",
     tags: ["unverified", "program", "unknown", "VS-02"],
@@ -70,7 +84,7 @@ export const SECURITY_CORPUS: Chunk[] = [
   {
     id: "sec-06",
     source: "Solana Transaction Simulation Manual",
-    uri: "https://docs.solana.com/api/http#simulatetransaction",
+    uri: "https://solana.com/docs/core/transactions/simulation",
     content:
       "Simulating transactions pre-flight allows verification of execution logs and compute units. However, simulation failure is not conclusive proof of malice (e.g. recent blockhash expiry, missing mock balances), and simulation success does not guarantee future execution on live chain.",
     tags: ["simulation", "simulate", "rpc", "VS-08-ERR"],
@@ -113,7 +127,6 @@ export async function retrieve(
       if (chunk.tags?.some((t) => t.toLowerCase().includes(word))) score += 4;
     }
 
-    // Default base score for relevance if query is broad like "security"
     if (score === 0 && (normalizedQuery === "security" || normalizedQuery.length === 0)) {
       score = 1;
     }

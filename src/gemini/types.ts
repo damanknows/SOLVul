@@ -34,6 +34,9 @@ export interface RetrievedEvidenceInput {
   title: string;
   sourceUrl?: string;
   excerpt: string;
+  relevanceScore?: number;
+  findingId?: string;
+  trustLevel?: string;
 }
 
 /**

@@ -17,6 +17,11 @@ export const envSchema = z.object({
   SOLANA_RPC_ENDPOINT: z.string().url().default("https://api.devnet.solana.com"),
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-3.5-flash"),
+  RAG_EMBEDDING_PROVIDER: z.string().default("google"),
+  RAG_EMBEDDING_MODEL: z.string().default("gemini-embedding-001"),
+  RAG_VECTOR_STORE: z.string().default("persistent-json"),
+  RAG_MIN_RELEVANCE_SCORE: z.string().default("0.65"),
+  RAG_TOP_K: z.string().default("4"),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -29,6 +34,11 @@ export const env: Env = envSchema.parse({
   SOLANA_RPC_ENDPOINT: process.env.SOLANA_RPC_ENDPOINT || "https://api.devnet.solana.com",
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
   GEMINI_MODEL: process.env.GEMINI_MODEL || "gemini-3.5-flash",
+  RAG_EMBEDDING_PROVIDER: process.env.RAG_EMBEDDING_PROVIDER || "google",
+  RAG_EMBEDDING_MODEL: process.env.RAG_EMBEDDING_MODEL || "gemini-embedding-001",
+  RAG_VECTOR_STORE: process.env.RAG_VECTOR_STORE || "persistent-json",
+  RAG_MIN_RELEVANCE_SCORE: process.env.RAG_MIN_RELEVANCE_SCORE || "0.65",
+  RAG_TOP_K: process.env.RAG_TOP_K || "4",
 });
 
 /**

@@ -65,6 +65,9 @@ export function buildGeminiPrompt(input: GeminiAnalysisInput): string {
     title: sanitizeUntrustedString(e.title),
     sourceUrl: e.sourceUrl ? sanitizeUntrustedString(e.sourceUrl) : undefined,
     excerpt: sanitizeUntrustedString(e.excerpt),
+    findingId: e.findingId ? sanitizeUntrustedString(e.findingId) : undefined,
+    relevanceScore: typeof e.relevanceScore === "number" ? e.relevanceScore : undefined,
+    trustLevel: e.trustLevel ? sanitizeUntrustedString(e.trustLevel) : undefined,
   }));
 
   return `Please analyze the following Solana transaction inspection data and produce an objective security explanation in JSON format.

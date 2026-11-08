@@ -14,6 +14,8 @@ export default function GeminiExplanationCard({
   initialExplanation = null,
 }: GeminiExplanationCardProps) {
   const [explanation, setExplanation] = useState<GeminiExplanation | null>(initialExplanation);
+  const [findingEvidence, setFindingEvidence] = useState<any[]>([]);
+  const [ragSummary, setRagSummary] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(!initialExplanation);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,6 +41,12 @@ export default function GeminiExplanationCard({
       const data = await res.json();
       if (data.explanation) {
         setExplanation(data.explanation);
+        if (Array.isArray(data.findingEvidence)) {
+          setFindingEvidence(data.findingEvidence);
+        }
+        if (data.ragSummary) {
+          setRagSummary(data.ragSummary);
+        }
       } else {
         throw new Error("Invalid response format from explanation API");
       }
@@ -235,6 +243,63 @@ export default function GeminiExplanationCard({
       <section className="mb-4">
         <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Simulation Interpretation</h4>
         <p className="text-xs text-slate-700 bg-slate-50 p-2.5 rounded border">{explanation.simulationInterpretation}</p>
+      </section>
+
+      {/* RAG Security Evidence Section */}
+      <section className="mb-4 p-3.5 bg-slate-50 border border-slate-200 rounded-lg" data-testid="rag-evidence-section">
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+            <span>📚</span> Retrieved Security Knowledge (RAG)
+          </h4>
+          <span className="text-[11px] font-mono text-slate-500">
+            {findingEvidence.length > 0
+              ? `${findingEvidence.reduce((acc, f) => acc + (f.documents?.length || 0), 0)} sources`
+              : "0 sources"}
+          </span>
+        </div>
+
+        {findingEvidence.length > 0 ? (
+          <div className="space-y-3">
+            {findingEvidence.map((group, gIdx) => (
+              <div key={gIdx} className="border-l-2 border-indigo-400 pl-2.5 py-0.5">
+                <div className="text-[11px] font-bold text-indigo-900 mb-1">
+                  Supports Finding:{" "}
+                  <span className="font-mono bg-indigo-100 text-indigo-800 px-1 py-0.5 rounded text-[10px]">
+                    {group.findingId}
+                  </span>
+                </div>
+                {group.documents?.map((doc: any, dIdx: number) => (
+                  <div key={dIdx} className="text-xs bg-white p-2.5 rounded border border-slate-200 mb-1.5 shadow-xs">
+                    <div className="flex items-center justify-between mb-1">
+                      {doc.sourceUrl ? (
+                        <a
+                          href={doc.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-semibold text-indigo-600 hover:underline flex items-center gap-1"
+                        >
+                          {doc.title} ↗
+                        </a>
+                      ) : (
+                        <span className="font-semibold text-slate-800">{doc.title}</span>
+                      )}
+                      <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono">
+                        Retrieval Relevance: {typeof doc.relevanceScore === "number" ? `${(doc.relevanceScore * 100).toFixed(0)}%` : "N/A"}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 line-clamp-3 italic">
+                      "{doc.excerpt}"
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500 italic">
+            {ragSummary || "No sufficiently relevant security documentation found."}
+          </p>
+        )}
       </section>
 
       {/* Evidence References */}
