@@ -30,15 +30,16 @@ export class SecurityKnowledgeRetriever {
 
   /**
    * Retrieves evidence-backed security documentation tailored specifically
-   * to deterministic STRS findings and transaction instructions.
+   * to deterministic STRS findings, transaction instructions, and simulation evidence.
    */
   public async retrieveForTransaction(
     decoded?: DecodedTransaction,
     findings: FindingBreakdown[] = [],
     overrideMinScore?: number,
+    simulation?: any,
   ): Promise<RAGPipelineResult> {
     const minScore = overrideMinScore !== undefined ? overrideMinScore : this.config.minRelevanceScore;
-    const queries = buildQueriesForFindings(findings, decoded);
+    const queries = buildQueriesForFindings(findings, decoded, simulation);
 
     if (queries.length === 0 || this.vectorStore.count === 0) {
       return {

@@ -3,9 +3,17 @@ import React, { useState, useEffect, useRef } from "react";
 import { Transaction as LegacyTx, VersionedTransaction as VTx } from "@solana/web3.js";
 import { decodeTransaction, DecodedTransaction } from "../../solana/transactionDecoder";
 import { computeRiskScore, TransactionRiskAssessment } from "../../solana/transactionRiskScore";
-import { retrieve } from "../../rag/retriever";
-import generateExplanation, { Explanation } from "../../gemini/explanation";
+import {
+  createDeterministicFallback,
+  type GeminiAnalysisInput,
+  type GeminiExplanation,
+  type Explanation,
+} from "../../gemini/explanation";
 import { sha256 } from "../utils/crypto";
+import CpiCallTree from "./inspector/CpiCallTree";
+import AccountDiffMatrix from "./inspector/AccountDiffMatrix";
+import AuditReceiptExport from "./AuditReceiptExport";
+import type { SimulationResult } from "../../solana/simulateTransaction";
 
 /**
  * Explicit state machine for the pre-signing firewall workflow.
@@ -31,11 +39,6 @@ export interface WalletProvider {
   request?: (args: { method: string; params?: any }) => Promise<any>;
 }
 
-import CpiCallTree from "./inspector/CpiCallTree";
-import AccountDiffMatrix from "./inspector/AccountDiffMatrix";
-import AuditReceiptExport from "./AuditReceiptExport";
-import type { SimulationResult } from "../../solana/simulateTransaction";
-
 /**
  * Props for the PreSigningFlow component.
  */
@@ -44,6 +47,7 @@ export interface PreSigningFlowProps {
   onSigned?: (signedBase64: string) => void;
   walletProvider?: WalletProvider;
   simulation?: SimulationResult | null;
+  simulateOutage?: boolean;
 }
 
 /**
@@ -52,25 +56,33 @@ export interface PreSigningFlowProps {
  * Enforces an explicit state machine:
  *   idle -> decoding -> analyzing -> ready -> (rejected | signing -> signed | error)
  *
- * Guarantees:
- * 1. Exact Transaction Binding: verifies SHA-256 hash of inspected transaction
- *    matches re-serialized bytes bit-for-bit prior to signing.
- * 2. Rejection Safety: Rejecting transitions to "rejected" and never invokes wallet signing.
- * 3. Double-Click Protection: Disables actions while in "signing" state.
- * 4. Zero Auto-Broadcast: Never broadcasts or sends transactions to RPC.
+ * Integrated Pipeline (Phase 16.1):
+ * 1. Decode transaction into instructions, programs, and accounts.
+ * 2. Deterministic STRS scoring (VS-01 to VS-08) — authoritative and unmodifiable by LLM.
+ * 3. Semantic RAG retrieval tailored to decoded transaction and STRS findings.
+ * 4. Zod-guarded Google Gemini AI explanation with automatic offline deterministic fallback.
+ * 5. Exact SHA-256 wire fingerprint binding & TOCTOU pre-signing tampering protection.
+ * 6. Visual CPI call tree & pre/post account state diff matrix.
+ * 7. Verifiable security audit receipt export.
+ * 8. Rejection safety & zero auto-broadcast.
  */
 export default function PreSigningFlow({
   base64Tx,
   onSigned,
   walletProvider,
   simulation,
+  simulateOutage = false,
 }: PreSigningFlowProps) {
   const [state, setState] = useState<PreSigningState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [isTampered, setIsTampered] = useState(false);
   const [decodedTx, setDecodedTx] = useState<DecodedTransaction | null>(null);
   const [riskAssessment, setRiskAssessment] = useState<TransactionRiskAssessment | null>(null);
-  const [explanation, setExplanation] = useState<Explanation | null>(null);
+  const [geminiExplanation, setGeminiExplanation] = useState<GeminiExplanation | null>(null);
+  const [legacyExplanation, setLegacyExplanation] = useState<Explanation | null>(null);
+  const [findingEvidence, setFindingEvidence] = useState<any[]>([]);
+  const [ragSummary, setRagSummary] = useState<string>("");
+  const [isFallback, setIsFallback] = useState<boolean>(false);
   const [inspectedHash, setInspectedHash] = useState<string | null>(null);
 
   // Prevent duplicate concurrent signing requests
@@ -113,20 +125,120 @@ export default function PreSigningFlow({
         if (isCancelled) return;
         setDecodedTx(decoded);
 
-        // 3. Analyzing & STRS risk scoring
+        // 3. Analyzing & STRS risk scoring (authoritative & deterministic)
         setState("analyzing");
-        const assessment = computeRiskScore(decoded);
+        const assessment = computeRiskScore(decoded, undefined, simulation || undefined);
         if (isCancelled) return;
         setRiskAssessment(assessment);
 
-        // 4. Evidence retrieval from security corpus
-        const retrieved = await retrieve("security", (globalThis as any).vectorStore, 3);
-        if (isCancelled) return;
+        // 4. Request Semantic RAG + Gemini Explanation from backend service
+        let explResult: GeminiExplanation;
+        let evidenceResult: any[] = [];
+        let summaryResult = "";
+        let fallbackActive = false;
 
-        // 5. Generate deterministic explanation
-        const expl = generateExplanation(assessment.breakdown, retrieved);
+        try {
+          const payload: any = {
+            base64Tx: base64Tx.trim(),
+            simulateOutage: Boolean(simulateOutage),
+          };
+          if (simulation) {
+            payload.simulation = {
+              status: simulation.status,
+              error: simulation.errorMessage || (simulation.error ? String(simulation.error) : undefined),
+              logs: simulation.logs,
+              limitations: [],
+            };
+          }
+
+          const res = await fetch("/api/gemini/explain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            if (data.explanation) {
+              explResult = data.explanation;
+              evidenceResult = Array.isArray(data.findingEvidence) ? data.findingEvidence : [];
+              summaryResult = data.ragSummary || "";
+              fallbackActive = Boolean(data.isFallback);
+            } else {
+              throw new Error("Invalid response format from explanation API");
+            }
+          } else {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP ${res.status} from explanation API`);
+          }
+        } catch (fetchErr: any) {
+          // Graceful deterministic fallback: if Gemini API or network fails, generate fallback locally!
+          fallbackActive = true;
+          const analysisInput: GeminiAnalysisInput = {
+            transactionHash: base64Tx.slice(0, 32),
+            network: "devnet",
+            riskScore: assessment.score,
+            riskLevel: assessment.riskLevel,
+            confidence: assessment.confidence,
+            findings: assessment.breakdown.map((f) => ({
+              ruleId: f.id,
+              severity: f.severity,
+              confidence: f.confidence,
+              explanation: f.explanation,
+              instructionIndex: f.instructionIndex,
+              affectedAccounts: f.affectedAccounts,
+              evidence: f.evidence,
+            })),
+            instructions: decoded.instructions.map((ix, idx) => ({
+              index: idx,
+              programId: ix.programId,
+              programName: ix.programName,
+              instructionName: (ix.data as any)?.type,
+              accounts: ix.accounts.map((a) => a.pubkey),
+              decodedData: typeof ix.data === "object" ? (ix.data as any) : undefined,
+            })),
+            simulation: {
+              status: simulation?.status || "not_simulated",
+              error: simulation?.errorMessage || (simulation?.error ? String(simulation.error) : undefined),
+              logs: simulation?.logs,
+              limitations: [],
+            },
+            retrievedEvidence: [],
+          };
+
+          explResult = createDeterministicFallback(
+            analysisInput,
+            `Deterministic fallback: ${fetchErr?.message || "Gemini service unreachable"}`,
+          );
+          summaryResult = "Offline deterministic evaluation active. RAG knowledge service unreachable.";
+        }
+
         if (isCancelled) return;
-        setExplanation(expl);
+        setGeminiExplanation(explResult);
+        setFindingEvidence(evidenceResult);
+        setRagSummary(summaryResult);
+        setIsFallback(fallbackActive);
+
+        // Maintain backward-compatible legacy explanation structure for exports/tests
+        setLegacyExplanation({
+          summary: explResult.transactionSummary,
+          findings: assessment.breakdown.map((f) => ({
+            id: f.id,
+            description: f.description,
+            severity: f.severity,
+            confidence: f.confidence,
+            evidenceIds: [],
+          })),
+          evidence: evidenceResult.flatMap((g) =>
+            (g.documents || []).map((d: any) => ({
+              source: d.title,
+              uri: d.sourceUrl || "https://solana.com",
+              snippet: d.excerpt,
+            })),
+          ),
+          uncertainty: explResult.limitations?.join(" · ") || "Evaluated by deterministic STRS engine.",
+          limitations: "Evidence retrieved from Solana security corpus.",
+        });
 
         setState("ready");
       } catch (err: any) {
@@ -141,7 +253,7 @@ export default function PreSigningFlow({
     return () => {
       isCancelled = true;
     };
-  }, [base64Tx]);
+  }, [base64Tx, simulateOutage, simulation]);
 
   // Handler for Reject — strictly transitions to "rejected" without touching wallet
   const handleReject = () => {
@@ -202,24 +314,6 @@ export default function PreSigningFlow({
         throw new Error("No Solana wallet provider detected");
       }
 
-      // Check connected wallet fee-payer alignment if public key is available
-      if (wallet.publicKey && decodedTx && decodedTx.message.accountKeys.length > 0) {
-        const expectedFeePayer = decodedTx.message.accountKeys[0];
-        const connectedWalletKey = typeof wallet.publicKey === "string"
-          ? wallet.publicKey
-          : wallet.publicKey.toBase58();
-
-        if (connectedWalletKey !== expectedFeePayer) {
-          // Note: not failing if not fee payer, but verify it exists in signers
-          const isSigner = decodedTx.instructions.some((ix) =>
-            ix.accounts.some((a) => a.pubkey === connectedWalletKey && a.isSigner),
-          );
-          if (!isSigner && connectedWalletKey !== expectedFeePayer) {
-            // fee payer or signer mismatch
-          }
-        }
-      }
-
       // Request signature from wallet (single call, explicit user initiation)
       const signedTx = await wallet.signTransaction(txObj);
 
@@ -249,14 +343,14 @@ export default function PreSigningFlow({
     }
   };
 
-  // Render state views
+  // Render loading state views
   if (state === "decoding" || state === "simulating" || state === "analyzing") {
     return (
       <div className="p-4 border rounded bg-slate-50" data-testid="presigning-loading">
         <p className="text-sm text-slate-700 font-medium">
           {state === "decoding" && "Decoding transaction payload…"}
           {state === "simulating" && "Simulating execution on chain…"}
-          {state === "analyzing" && "Analyzing STRS risk scoring and retrieving evidence…"}
+          {state === "analyzing" && "Analyzing STRS risk scoring and retrieving RAG evidence…"}
         </p>
       </div>
     );
@@ -299,7 +393,7 @@ export default function PreSigningFlow({
     );
   }
 
-  if (state === "idle" || !explanation) {
+  if (state === "idle" || (!geminiExplanation && !legacyExplanation)) {
     return (
       <div className="p-4 border rounded text-slate-500" data-testid="presigning-idle">
         No transaction loaded for inspection.
@@ -307,25 +401,56 @@ export default function PreSigningFlow({
     );
   }
 
+  const activeExplanation = geminiExplanation;
+
   return (
     <div className="p-4 border rounded bg-white shadow-md max-w-2xl mx-auto" data-testid="presigning-flow">
-      <div className="flex items-center justify-between border-b pb-2 mb-3">
+      {/* Header with STRS Risk Level & Status Badges */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b pb-3 mb-4 gap-2">
         <h2 className="text-lg font-bold text-slate-900">Pre-Sign Security Firewall</h2>
-        {riskAssessment && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {riskAssessment && (
+            <span
+              className={`px-2.5 py-0.5 text-xs font-semibold rounded ${
+                riskAssessment.riskLevel === "CRITICAL"
+                  ? "bg-red-100 text-red-800 border border-red-200"
+                  : riskAssessment.riskLevel === "HIGH"
+                  ? "bg-orange-100 text-orange-800 border border-orange-200"
+                  : riskAssessment.riskLevel === "MEDIUM"
+                  ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
+                  : "bg-green-100 text-green-800 border border-green-200"
+              }`}
+              data-testid="strs-score-badge"
+            >
+              STRS: {riskAssessment.score}/100 ({riskAssessment.riskLevel})
+            </span>
+          )}
+
+          {/* Gemini Availability Status Badge */}
+          {!isFallback ? (
+            <span
+              className="px-2.5 py-0.5 text-xs font-semibold bg-violet-100 text-violet-800 rounded-full border border-violet-200"
+              data-testid="gemini-status-badge"
+            >
+              ✨ Powered by Gemini ({activeExplanation?.modelUsed || "gemini-2.5-flash"})
+            </span>
+          ) : (
+            <span
+              className="px-2.5 py-0.5 text-xs font-semibold bg-slate-100 text-slate-700 rounded-full border border-slate-300"
+              data-testid="gemini-status-badge"
+            >
+              ⚙️ Deterministic Fallback Mode
+            </span>
+          )}
+
+          {/* RAG Availability Status Badge */}
           <span
-            className={`px-2 py-0.5 text-xs font-semibold rounded ${
-              riskAssessment.riskLevel === "CRITICAL"
-                ? "bg-red-100 text-red-800"
-                : riskAssessment.riskLevel === "HIGH"
-                ? "bg-orange-100 text-orange-800"
-                : riskAssessment.riskLevel === "MEDIUM"
-                ? "bg-yellow-100 text-yellow-800"
-                : "bg-green-100 text-green-800"
-            }`}
+            className="px-2.5 py-0.5 text-xs font-semibold bg-indigo-50 text-indigo-700 rounded-full border border-indigo-200"
+            data-testid="rag-status-badge"
           >
-            STRS: {riskAssessment.score}/100 ({riskAssessment.riskLevel})
+            📚 RAG: {findingEvidence.length > 0 ? `${findingEvidence.reduce((acc, f) => acc + (f.documents?.length || 0), 0)} Sources` : "No Evidence Matched"}
           </span>
-        )}
+        </div>
       </div>
 
       {/* Cryptographic TOCTOU Fingerprint & Decoded Message Header Counts */}
@@ -376,49 +501,200 @@ export default function PreSigningFlow({
         </div>
       </div>
 
-      {/* Summary */}
-      <section className="mb-4">
-        <h3 className="font-semibold text-sm text-slate-800 mb-1">Assessment Summary</h3>
-        <p className="text-sm text-slate-700">{explanation.summary}</p>
-      </section>
-
-      {/* Findings */}
-      {explanation.findings.length > 0 && (
-        <section className="mb-4">
-          <h3 className="font-semibold text-sm text-slate-800 mb-1">Deterministic Findings</h3>
+      {/* Deterministic STRS Findings Section */}
+      {riskAssessment && riskAssessment.breakdown.length > 0 && (
+        <section className="mb-4" data-testid="deterministic-findings-section">
+          <h3 className="font-semibold text-sm text-slate-800 mb-2 flex items-center justify-between">
+            <span>Deterministic STRS Findings ({riskAssessment.breakdown.length})</span>
+            <span className="text-xs text-slate-500 font-normal">Authoritative rule-based detections</span>
+          </h3>
           <ul className="space-y-1.5">
-            {explanation.findings.map((f) => (
+            {riskAssessment.breakdown.map((f) => (
               <li
                 key={f.id}
-                className="text-xs bg-slate-50 p-2 rounded border border-slate-200 flex flex-col"
+                className="text-xs bg-slate-50 p-2.5 rounded border border-slate-200 flex flex-col"
+                data-testid={`finding-${f.id}`}
               >
                 <div className="flex items-center justify-between mb-1">
-                  <span className="font-bold text-slate-900">{f.id}</span>
-                  <span className="text-slate-500">
+                  <span className="font-bold text-slate-900">{f.id} — {f.description}</span>
+                  <span className="text-slate-500 font-mono text-[11px]">
                     Severity {f.severity}/10 · Confidence {Math.round(f.confidence * 100)}%
                   </span>
                 </div>
-                <span className="text-slate-700">{f.description}</span>
+                <span className="text-slate-700">{f.explanation}</span>
+                {f.affectedAccounts && f.affectedAccounts.length > 0 && (
+                  <div className="mt-1 text-[10px] text-slate-500 font-mono truncate">
+                    Accounts: {f.affectedAccounts.join(", ")}
+                  </div>
+                )}
+                {f.suggestedAction && (
+                  <div className="mt-1 text-[11px] text-amber-800 bg-amber-50 p-1 rounded font-medium">
+                    Suggested Action: {f.suggestedAction}
+                  </div>
+                )}
               </li>
             ))}
           </ul>
         </section>
       )}
 
-      {/* Evidence */}
-      {explanation.evidence.length > 0 && (
-        <section className="mb-4">
-          <h3 className="font-semibold text-sm text-slate-800 mb-1">Corpus Evidence</h3>
-          <ul className="space-y-1">
-            {explanation.evidence.map((e, idx) => (
-              <li key={idx} className="text-xs text-slate-600">
-                <span className="font-medium text-slate-800">{e.source}: </span>
-                <span className="italic">{e.snippet}</span>
-              </li>
-            ))}
-          </ul>
+      {/* Google Gemini AI Security Explanation Section */}
+      {activeExplanation && (
+        <section className="mb-4 p-3.5 bg-slate-50 border border-slate-200 rounded-lg" data-testid="gemini-explanation-section">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+              <span>🛡️</span> AI Security Analysis & Plain-English Explanation
+            </h3>
+            <span className="text-[10px] text-slate-500 uppercase font-mono tracking-wider">
+              {activeExplanation.isFallback ? "Deterministic Fallback" : "Gemini Generative"}
+            </span>
+          </div>
+
+          {/* Transaction Summary */}
+          <div className="mb-3">
+            <h4 className="text-xs font-bold text-slate-600 uppercase tracking-wider mb-0.5">What this transaction does</h4>
+            <p className="text-xs text-slate-800 font-medium leading-relaxed" data-testid="explanation-summary">
+              {activeExplanation.transactionSummary}
+            </p>
+          </div>
+
+          {/* Risk Explanation */}
+          <div className="mb-3">
+            <h4 className="text-xs font-bold text-slate-600 uppercase tracking-wider mb-0.5">Risk Analysis</h4>
+            <p className="text-xs text-slate-700 leading-relaxed" data-testid="explanation-risk">
+              {activeExplanation.riskExplanation}
+            </p>
+          </div>
+
+          {/* Security Concerns */}
+          {activeExplanation.securityConcerns && activeExplanation.securityConcerns.length > 0 && (
+            <div className="mb-3 p-2.5 bg-red-50/80 border border-red-200 rounded">
+              <h4 className="text-xs font-bold text-red-900 mb-1 flex items-center gap-1">
+                <span>⚠️</span> Security Concerns
+              </h4>
+              <ul className="text-xs text-red-800 space-y-0.5 list-disc list-inside">
+                {activeExplanation.securityConcerns.map((concern, idx) => (
+                  <li key={idx}>{concern}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Affected Assets */}
+          {activeExplanation.affectedAssets && activeExplanation.affectedAssets.length > 0 && (
+            <div className="mb-3 p-2.5 bg-amber-50/80 border border-amber-200 rounded">
+              <h4 className="text-xs font-bold text-amber-900 mb-1 flex items-center gap-1">
+                <span>💼</span> Potentially Affected Assets & Accounts
+              </h4>
+              <ul className="text-xs text-amber-800 space-y-0.5 font-mono list-disc list-inside">
+                {activeExplanation.affectedAssets.map((asset, idx) => (
+                  <li key={idx}>{asset}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Recommended Actions */}
+          {activeExplanation.recommendedActions && activeExplanation.recommendedActions.length > 0 && (
+            <div className="mb-3 p-2.5 bg-emerald-50 border border-emerald-200 rounded">
+              <h4 className="text-xs font-bold text-emerald-900 mb-1 flex items-center gap-1">
+                <span>✅</span> Recommended Verification Steps Before Signing
+              </h4>
+              <ul className="text-xs text-emerald-800 space-y-0.5 list-disc list-inside">
+                {activeExplanation.recommendedActions.map((action, idx) => (
+                  <li key={idx}>{action}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Simulation Interpretation */}
+          {activeExplanation.simulationInterpretation && (
+            <div className="mb-2 text-xs text-slate-600 bg-white p-2 rounded border border-slate-200">
+              <span className="font-semibold text-slate-700">Simulation Interpretation: </span>
+              {activeExplanation.simulationInterpretation}
+            </div>
+          )}
+
+          {/* Limitations */}
+          {activeExplanation.limitations && activeExplanation.limitations.length > 0 && (
+            <div className="pt-2 border-t border-slate-200 text-[11px] text-slate-500">
+              <span className="font-semibold text-slate-600">Remaining Uncertainties: </span>
+              {activeExplanation.limitations.join(" · ")}
+            </div>
+          )}
         </section>
       )}
+
+      {/* Retrieved Security Knowledge (RAG Evidence) Section */}
+      <section className="mb-4 p-3.5 bg-slate-50 border border-slate-200 rounded-lg" data-testid="rag-evidence-section">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="font-semibold text-xs text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+            <span>📚</span> Retrieved Security Knowledge (RAG Evidence)
+          </h3>
+          <span className="text-[11px] font-mono text-slate-500">
+            {findingEvidence.length > 0
+              ? `${findingEvidence.reduce((acc, f) => acc + (f.documents?.length || 0), 0)} sources`
+              : "0 sources"}
+          </span>
+        </div>
+
+        {findingEvidence.length > 0 ? (
+          <div className="space-y-3">
+            {findingEvidence.map((group, gIdx) => (
+              <div key={gIdx} className="border-l-2 border-indigo-400 pl-2.5 py-0.5">
+                <div className="text-[11px] font-bold text-indigo-900 mb-1">
+                  Supports Finding:{" "}
+                  <span className="font-mono bg-indigo-100 text-indigo-800 px-1 py-0.5 rounded text-[10px]">
+                    {group.findingId}
+                  </span>
+                </div>
+                {group.documents?.map((doc: any, dIdx: number) => (
+                  <div key={dIdx} className="text-xs bg-white p-2.5 rounded border border-slate-200 mb-1.5 shadow-xs">
+                    <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
+                      {doc.sourceUrl ? (
+                        <a
+                          href={doc.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-semibold text-indigo-600 hover:underline flex items-center gap-1"
+                        >
+                          {doc.title} ↗
+                        </a>
+                      ) : (
+                        <span className="font-semibold text-slate-800">{doc.title}</span>
+                      )}
+                      <div className="flex items-center gap-1.5">
+                        {doc.trustLevel && (
+                          <span
+                            className={`text-[9px] uppercase px-1.5 py-0.5 rounded font-mono font-bold ${
+                              doc.trustLevel === "authoritative"
+                                ? "bg-emerald-100 text-emerald-800"
+                                : "bg-blue-100 text-blue-800"
+                            }`}
+                          >
+                            {doc.trustLevel}
+                          </span>
+                        )}
+                        <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono">
+                          Relevance: {typeof doc.relevanceScore === "number" ? `${(doc.relevanceScore * 100).toFixed(0)}%` : "N/A"}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-slate-600 line-clamp-3 italic">
+                      "{doc.excerpt}"
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500 italic" data-testid="rag-empty-notice">
+            {ragSummary || "No sufficiently relevant security documentation found."}
+          </p>
+        )}
+      </section>
 
       {/* Visual Security Inspection Panels: Inner CPI Execution Tree */}
       <section className="mb-4">
@@ -444,7 +720,7 @@ export default function PreSigningFlow({
           sha256Hash={inspectedHash ?? ""}
           decodedTx={decodedTx}
           riskAssessment={riskAssessment}
-          explanation={explanation}
+          explanation={activeExplanation || legacyExplanation}
           isTampered={isTampered}
         />
       </section>

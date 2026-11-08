@@ -19,6 +19,12 @@ const MAX_REQUEST_SIZE_BYTES = 1024 * 1024;
 const ExplainRequestSchema = z.object({
   base64Tx: z.string().optional(),
   inspection: GeminiAnalysisInputSchema.optional(),
+  simulation: z.object({
+    status: z.string().min(1),
+    error: z.string().optional(),
+    logs: z.array(z.string()).optional(),
+    limitations: z.array(z.string()).default([]),
+  }).optional(),
   network: z.string().optional().default("devnet"),
   simulateOutage: z.boolean().optional().default(false),
   deterministicOnly: z.boolean().optional().default(false),
@@ -77,7 +83,7 @@ export async function POST(req: Request): Promise<Response> {
       );
     }
 
-    const { base64Tx, inspection } = parseResult.data;
+    const { base64Tx, inspection, simulation: simParam } = parseResult.data;
     let analysisInput: GeminiAnalysisInput;
     let ragResult: any = null;
 
@@ -87,30 +93,15 @@ export async function POST(req: Request): Promise<Response> {
       const decoded = await decodeTransaction(base64Tx);
       const assessment = computeRiskScore(decoded);
 
-      // Retrieve evidence-backed security documentation tailored specifically to findings
+      // Retrieve evidence-backed security documentation tailored specifically to findings & simulation
       try {
-        ragResult = await getSecurityEvidenceForTransaction(decoded, assessment.breakdown);
+        ragResult = await getSecurityEvidenceForTransaction(decoded, assessment.breakdown, simParam);
       } catch {
-        const fallbackRetrieved = await retrieve("security", undefined, 4);
         ragResult = {
-          allRetrieved: fallbackRetrieved.map((r) => ({
-            chunk: {
-              id: r.chunk.id,
-              documentId: r.chunk.id,
-              title: r.chunk.source,
-              sourceUrl: r.chunk.uri,
-              content: r.chunk.content,
-              documentType: "official_docs",
-              category: "solana",
-              trustLevel: "authoritative",
-              createdAt: new Date().toISOString(),
-              ingestedAt: new Date().toISOString(),
-            },
-            relevanceScore: r.score,
-          })),
+          allRetrieved: [],
           evidence: [],
-          summary: "Fallback security references used.",
-          hasResults: fallbackRetrieved.length > 0,
+          summary: "No sufficiently relevant security documentation found.",
+          hasResults: false,
         };
       }
 
@@ -137,7 +128,12 @@ export async function POST(req: Request): Promise<Response> {
           accounts: ix.accounts.map((a) => a.pubkey),
           decodedData: typeof ix.data === "object" ? (ix.data as any) : undefined,
         })),
-        simulation: {
+        simulation: simParam ? {
+          status: simParam.status,
+          error: simParam.error,
+          logs: simParam.logs,
+          limitations: simParam.limitations,
+        } : {
           status: "not_simulated",
           limitations: [
             "Simulation not requested in explanation endpoint; evaluation based on static bytecode and schema analysis.",
@@ -178,8 +174,18 @@ export async function POST(req: Request): Promise<Response> {
         isFallback: explanation.isFallback,
         authoritativeScore: analysisInput.riskScore,
         authoritativeRiskLevel: analysisInput.riskLevel,
+        findings: analysisInput.findings,
         findingEvidence: (ragResult as any)?.evidence || [],
         ragSummary: (ragResult as any)?.summary || (analysisInput.retrievedEvidence.length > 0 ? "Evidence retrieved" : "No sufficiently relevant security documentation found."),
+        ragStatus: {
+          hasResults: Boolean((ragResult as any)?.hasResults),
+          count: (ragResult as any)?.allRetrieved?.length || 0,
+        },
+        geminiStatus: {
+          available: !explanation.isFallback,
+          model: explanation.modelUsed || "gemini-2.5-flash",
+          isFallback: Boolean(explanation.isFallback),
+        },
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     );

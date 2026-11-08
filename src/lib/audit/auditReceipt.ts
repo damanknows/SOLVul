@@ -156,14 +156,14 @@ export function generateAuditReceipt(params: GenerateReceiptParams): SecurityAud
     },
     ragCitations: citations,
     geminiExplanation: {
-      summary: explanation?.summary ?? "No AI explanation available.",
-      risks: (explanation as any)?.risks ?? [],
-      recommendations: (explanation as any)?.recommendations ?? [],
-      findings: (explanation?.findings ?? []).map((f: any) => ({
-        id: f.id,
-        severity: f.severity,
-        confidence: f.confidence,
-        description: f.description,
+      summary: (explanation as any)?.transactionSummary ?? explanation?.summary ?? "No AI explanation available.",
+      risks: (explanation as any)?.securityConcerns ?? (explanation as any)?.risks ?? [],
+      recommendations: (explanation as any)?.recommendedActions ?? (explanation as any)?.recommendations ?? [],
+      findings: ((explanation as any)?.criticalFindings ?? explanation?.findings ?? []).map((f: any) => ({
+        id: f.ruleId ?? f.id,
+        severity: f.severity ?? 0,
+        confidence: f.confidence ?? 1.0,
+        description: f.explanation ?? f.description ?? "",
       })),
       technicalDetails: (explanation as any)?.technicalDetails,
     },

@@ -8,7 +8,7 @@ import {
 } from "../../lib/audit/auditReceipt";
 import type { DecodedTransaction } from "../../solana/transactionDecoder";
 import type { TransactionRiskAssessment } from "../../solana/transactionRiskScore";
-import type { Explanation } from "../../gemini/explanation";
+import type { Explanation, GeminiExplanation } from "../../gemini/explanation";
 
 export interface AuditReceiptExportProps {
   receipt?: SecurityAuditReceipt;
@@ -16,7 +16,7 @@ export interface AuditReceiptExportProps {
   sha256Hash?: string;
   decodedTx?: DecodedTransaction | null;
   riskAssessment?: TransactionRiskAssessment | null;
-  explanation?: Explanation | null;
+  explanation?: Explanation | GeminiExplanation | any | null;
   ragCitations?: AuditRagCitation[];
   isTampered?: boolean;
   className?: string;

@@ -45,11 +45,12 @@ export async function initializeRAG(): Promise<void> {
 }
 
 /**
- * Retrieves security knowledge evidence for a decoded transaction and its STRS findings.
+ * Retrieves security knowledge evidence for a decoded transaction, its STRS findings, and simulation results.
  */
 export async function getSecurityEvidenceForTransaction(
   decoded?: DecodedTransaction,
   findings: FindingBreakdown[] = [],
+  simulation?: any,
 ): Promise<RAGPipelineResult> {
   const vectorStore = getGlobalVectorStore();
 
@@ -58,5 +59,5 @@ export async function getSecurityEvidenceForTransaction(
   }
 
   const retriever = getDefaultRetriever();
-  return retriever.retrieveForTransaction(decoded, findings);
+  return retriever.retrieveForTransaction(decoded, findings, undefined, simulation);
 }

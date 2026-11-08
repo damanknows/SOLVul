@@ -167,7 +167,10 @@ const Inspector: NextPage = () => {
             )}
             <ResultCard title="Inspection Report">
               {/* PreSigningFlow handles loading, decoding, STRS scoring, RAG evidence and AI explanation */}
-              <PreSigningFlow base64Tx={txInput.trim()} />
+              <PreSigningFlow
+                base64Tx={txInput.trim()}
+                simulateOutage={simulateOutage}
+              />
             </ResultCard>
             <button
               type="button"

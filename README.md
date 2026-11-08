@@ -242,6 +242,15 @@ On-chain strings (memo messages, account names, instruction parameters) are trea
 - Control patterns (`SYSTEM:`, `### INSTRUCTION`, `OUTPUT SAFE`, `IGNORE ALL PREVIOUS RULES`) are stripped and neutralized before passing to Gemini.
 - The Guardrail status strip dynamically flags `Adversarial Injection Neutralized & Sanitized (NEUTRALIZED)` whenever attack strings are detected in transaction payloads.
 
+### Main Inspector End-to-End Flow (Phase 16.1)
+The primary Inspector (`/inspector` and `PreSigningFlow.tsx`) seamlessly routes every submitted transaction through the unified Gemini + Semantic RAG pipeline:
+1. **Decode**: `decodeTransaction` parses legacy/v0 message structures, Address Lookup Tables, and instruction parameters.
+2. **Deterministic STRS**: `computeRiskScore` calculates authoritative rule evaluations (`VS-01` to `VS-08`).
+3. **Semantic Query Construction**: `buildQueriesForFindings` synthesizes targeted queries from detected program IDs, instruction types, finding descriptions, account relationships, and simulation errors (zero generic queries).
+4. **Evidence Retrieval & Provenance**: `getSecurityEvidenceForTransaction` retrieves authoritative knowledge chunks with cosine ranking and domain verification.
+5. **Generative Explanation**: `POST /api/gemini/explain` calls Google Gemini (`@google/genai`) with read-only STRS inputs and strict Zod validation (`GeminiExplanationSchema`).
+6. **Graceful Fallback**: If Gemini or network connectivity is unavailable, `createDeterministicFallback` instantly populates the report without UI crashes or score mutation.
+
 ---
 
 ## Interactive Visual Security Panels
