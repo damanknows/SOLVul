@@ -6,7 +6,7 @@ module.exports = {
   },
   setupFilesAfterEnv: ["<rootDir>/jest.setup.js", "@testing-library/jest-dom"],
   moduleNameMapper: {
-    "^uuid$": require.resolve("uuid"),
+    "^uuid$": "<rootDir>/__mocks__/uuid.js",
     "^@google/genai$": require.resolve("@google/genai"),
   },
   testPathIgnorePatterns: ["/node_modules/", "/dist/"],
