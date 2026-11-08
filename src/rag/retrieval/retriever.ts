@@ -17,6 +17,7 @@ export class SecurityKnowledgeRetriever {
   private vectorStore: VectorStore;
   private embeddingService: IEmbeddingService;
   private config: RAGConfig;
+  public lexicalFallbackUsed: boolean = false;
 
   constructor(
     vectorStore?: VectorStore,
@@ -38,6 +39,7 @@ export class SecurityKnowledgeRetriever {
     overrideMinScore?: number,
     simulation?: any,
   ): Promise<RAGPipelineResult> {
+    this.lexicalFallbackUsed = false;
     const minScore = overrideMinScore !== undefined ? overrideMinScore : this.config.minRelevanceScore;
     const queries = buildQueriesForFindings(findings, decoded, simulation);
 
@@ -54,8 +56,15 @@ export class SecurityKnowledgeRetriever {
     const allScored: ScoredChunk[] = [];
 
     for (const query of queries) {
+      let queryVector: number[] | null = null;
       try {
-        const queryVector = await this.embeddingService.generateEmbedding(query.text);
+        queryVector = await this.embeddingService.generateEmbedding(query.text);
+      } catch {
+        // Embedding failed: trigger lexical keyword search fallback
+        this.lexicalFallbackUsed = true;
+      }
+
+      if (queryVector) {
         const matches = this.vectorStore.search(queryVector, {
           topK: 2,
           minScore: minScore * 0.9, // slightly relaxed before final ranking
@@ -69,8 +78,29 @@ export class SecurityKnowledgeRetriever {
             findingId: query.findingId,
           });
         }
-      } catch {
-        // Continue querying remaining findings if one embedding call fails
+      } else {
+        // Lexical keyword search fallback across indexed chunks
+        const queryTerms = query.text.toLowerCase().split(/\s+/).filter((t) => t.length > 2);
+        for (const entry of this.vectorStore.getAllEntries()) {
+          if (query.category && entry.chunk.category !== query.category) continue;
+          const contentLower = `${entry.chunk.title} ${entry.chunk.section || ""} ${entry.chunk.content}`.toLowerCase();
+          let matchCount = 0;
+          for (const term of queryTerms) {
+            if (contentLower.includes(term)) {
+              matchCount++;
+            }
+          }
+          if (matchCount > 0) {
+            const lexicalScore = Math.min(0.95, 0.65 + (matchCount / queryTerms.length) * 0.25);
+            if (lexicalScore >= minScore * 0.9) {
+              allScored.push({
+                chunk: entry.chunk,
+                relevanceScore: Number(lexicalScore.toFixed(3)),
+                findingId: query.findingId,
+              });
+            }
+          }
+        }
       }
     }
 
@@ -92,10 +122,21 @@ export class SecurityKnowledgeRetriever {
 
     const evidence = mapChunksToFindingEvidence(filtered);
 
+    // Formulate truthful summary without overclaiming authority for unverified/community sources
+    const authCount = filtered.filter((f) => f.chunk.trustLevel === "authoritative").length;
+    let summary: string;
+    if (authCount === filtered.length) {
+      summary = `Retrieved ${filtered.length} authoritative security evidence document(s).`;
+    } else if (authCount > 0) {
+      summary = `Retrieved ${filtered.length} security evidence document(s) (${authCount} authoritative).`;
+    } else {
+      summary = `Retrieved ${filtered.length} security evidence document(s) (community/research sources).`;
+    }
+
     return {
       evidence,
       allRetrieved: filtered,
-      summary: `Retrieved ${filtered.length} authoritative security evidence document(s).`,
+      summary,
       hasResults: true,
     };
   }

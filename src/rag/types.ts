@@ -34,6 +34,7 @@ export interface KnowledgeChunk {
   updatedAt?: string;
   ingestedAt: string;
   trustLevel: TrustLevel;
+  contentHash?: string;
 }
 
 export interface RawKnowledgeDocument {
@@ -83,6 +84,7 @@ export interface FindingEvidenceDocument {
   relevanceScore: number;
   section?: string;
   trustLevel?: TrustLevel;
+  contentHash?: string;
 }
 
 /**

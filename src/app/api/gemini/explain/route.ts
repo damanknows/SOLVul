@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import { decodeTransaction } from "../../../../solana/transactionDecoder";
 import { computeRiskScore } from "../../../../solana/transactionRiskScore";
-import { getSecurityEvidenceForTransaction } from "../../../../rag/service";
+import { getSecurityEvidenceForTransaction, getRAGStatus } from "../../../../rag/service";
 import { generateSecurityExplanation, createDeterministicFallback } from "../../../../gemini/explanation";
 import { GeminiAnalysisInputSchema, isValidBase64 } from "../../../../gemini/schemas";
 import { getGeminiModel } from "../../../../gemini/client";
@@ -262,6 +262,7 @@ export async function POST(req: Request): Promise<Response> {
         ragStatus: {
           hasResults: Boolean((ragResult as any)?.hasResults),
           count: (ragResult as any)?.allRetrieved?.length || 0,
+          operational: getRAGStatus(),
         },
         geminiStatus: {
           available: !explanation.isFallback,

@@ -62,6 +62,12 @@ export class IngestionPipeline {
 
       for (const chunk of chunks) {
         const hash = hashContent(chunk.content);
+        if (chunk.contentHash && chunk.contentHash.toLowerCase() !== hash.toLowerCase()) {
+          // Reject chunk with mismatched/corrupted content hash
+          continue;
+        }
+        chunk.contentHash = hash;
+
         if (this.vectorStore.hasContentHash(hash)) {
           skippedDuplicates++;
           continue;

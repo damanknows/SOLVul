@@ -266,6 +266,15 @@ The backend explanation service (`POST /api/gemini/explain`) is hardened against
 6. **Safe Error Handling & Redaction**: All API keys (matching `AIza...`) are strictly redacted, and internal stack traces are never exposed in API responses.
 7. **Unified Model Standard**: Default model configuration is standardized to `gemini-2.5-flash` across client, environment schemas, and configuration templates.
 
+### RAG Evidence Provenance & Prompt Injection Protection (Phase 16.3)
+SOLVul hardens the end-to-end retrieval-to-prompt boundary against data poisoning, delimiter breakouts, and prompt injections:
+1. **Unified Provenance Validation**: Input documents (JSON and Markdown) cannot declare their own `trustLevel`. Trust is derived strictly from verified domain registries (`solana.com`, `spl.solana.com`, `anchor-lang.com`, `neodyme.io`, `ottersec.com`, `sec3.dev`). Documents from untrusted domains are demoted to `community`.
+2. **Cryptographic Chunk Content Hash**: Every indexed chunk computes and verifies its SHA-256 content hash (`crypto.createHash('sha256').update(content).digest('hex')`), rejecting corrupted or tampered chunks during ingestion.
+3. **Retrieval-to-Prompt Sanitizer Integration**: The unified RAG security sanitizer (`sanitizeUntrustedContent`) strips control characters and neutralizes injection patterns (`SYSTEM:`, `### INSTRUCTION`, `OUTPUT SAFE`, `OVERRIDE SECURITY`, `[INSTRUCTION]`) and code block breakouts (` \`\`\` ` $\rightarrow$ `'''`).
+4. **Structural Delimiter Isolation**: Retrieved evidence excerpts are wrapped in `<UNTRUSTED_EVIDENCE_EXCERPT>` containers with explicit provenance tags (`id`, `title`, `trust_level`, `source`) and `[EVIDENCE_DATA_START]` / `[EVIDENCE_DATA_END]` guards. Attempted delimiter injection closing tags are neutralized.
+5. **Truthful Evidence Summaries**: If unverified or community sources are retrieved, the summary reflects this accurately and never overclaims that unverified documents are authoritative.
+6. **Lexical Fallback & Operational Telemetry**: When upstream embedding services encounter timeouts or rate limits, the retriever automatically falls back to lexical keyword search without crashing. Real-time RAG operational telemetry (`getRAGStatus()`) reports initialization state, document/chunk counts, embedding provider/model, and sanitized error messages with zero disclosure of credentials or local filesystem paths.
+
 ---
 
 ## Interactive Visual Security Panels

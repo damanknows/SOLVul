@@ -70,6 +70,16 @@ export class VectorStore {
     return this.entries.size;
   }
 
+  public get documentCount(): number {
+    const docIds = new Set<string>();
+    for (const entry of this.entries.values()) {
+      if (entry.chunk.documentId) {
+        docIds.add(entry.chunk.documentId);
+      }
+    }
+    return docIds.size;
+  }
+
   /**
    * Adds a vector entry. Ignores duplicates if content hash already exists.
    * Returns true if entry was added, false if it was a duplicate.

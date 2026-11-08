@@ -26,6 +26,11 @@ export function createKnowledgeChunk(input: ChunkMetadataInput): KnowledgeChunk 
   });
 
   const stableId = `chunk-${input.documentId}-${input.chunkIndex}`;
+  const contentHash = crypto
+    .createHash("sha256")
+    .update(input.content.trim())
+    .digest("hex")
+    .toLowerCase();
 
   return {
     id: stableId,
@@ -41,6 +46,7 @@ export function createKnowledgeChunk(input: ChunkMetadataInput): KnowledgeChunk 
     updatedAt: input.updatedAt,
     ingestedAt: new Date().toISOString(),
     trustLevel,
+    contentHash,
   };
 }
 
