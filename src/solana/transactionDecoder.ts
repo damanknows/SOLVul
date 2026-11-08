@@ -59,6 +59,11 @@ export interface DecodedTransaction {
     accountKeys: string[];
     recentBlockhash: string;
     instructionCount: number;
+    header?: {
+      numRequiredSignatures: number;
+      numReadonlySignedAccounts: number;
+      numReadonlyUnsignedAccounts: number;
+    };
   };
   instructions: DecodedInstruction[];
   warnings?: string[];
@@ -459,6 +464,13 @@ export async function decodeTransaction(
         accountKeys: message.accountKeys.map((k) => k.toBase58()),
         recentBlockhash: message.recentBlockhash,
         instructionCount: message.instructions.length,
+        header: message.header
+          ? {
+              numRequiredSignatures: message.header.numRequiredSignatures,
+              numReadonlySignedAccounts: message.header.numReadonlySignedAccounts,
+              numReadonlyUnsignedAccounts: message.header.numReadonlyUnsignedAccounts,
+            }
+          : undefined,
       },
       instructions: decodedInstructions,
     };
@@ -667,6 +679,13 @@ export async function decodeTransaction(
       accountKeys: allAccountKeys.map((k) => k.toBase58()),
       recentBlockhash: messageV0.recentBlockhash ?? "",
       instructionCount: compiledInstructions.length,
+      header: messageV0.header
+        ? {
+            numRequiredSignatures: messageV0.header.numRequiredSignatures,
+            numReadonlySignedAccounts: messageV0.header.numReadonlySignedAccounts,
+            numReadonlyUnsignedAccounts: messageV0.header.numReadonlyUnsignedAccounts,
+          }
+        : undefined,
     },
     instructions: decodedInstructions,
     ...(warnings.length > 0 ? { warnings } : {}),

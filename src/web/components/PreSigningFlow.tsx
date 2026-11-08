@@ -33,6 +33,7 @@ export interface WalletProvider {
 
 import CpiCallTree from "./inspector/CpiCallTree";
 import AccountDiffMatrix from "./inspector/AccountDiffMatrix";
+import AuditReceiptExport from "./AuditReceiptExport";
 import type { SimulationResult } from "../../solana/simulateTransaction";
 
 /**
@@ -66,6 +67,7 @@ export default function PreSigningFlow({
 }: PreSigningFlowProps) {
   const [state, setState] = useState<PreSigningState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [isTampered, setIsTampered] = useState(false);
   const [decodedTx, setDecodedTx] = useState<DecodedTransaction | null>(null);
   const [riskAssessment, setRiskAssessment] = useState<TransactionRiskAssessment | null>(null);
   const [explanation, setExplanation] = useState<Explanation | null>(null);
@@ -188,8 +190,9 @@ export default function PreSigningFlow({
 
       const preSignHash = await sha256(reSerialized);
       if (preSignHash !== inspectedHash) {
+        setIsTampered(true);
         throw new Error(
-          `Cryptographic transaction binding mismatch! Inspected hash (${inspectedHash}) does not match pre-sign hash (${preSignHash}). Transaction was modified.`,
+          `Payload Tampering Detected! Cryptographic transaction binding mismatch: Inspected hash (${inspectedHash}) does not match pre-sign hash (${preSignHash}). Transaction was modified after inspection.`,
         );
       }
 
@@ -260,10 +263,38 @@ export default function PreSigningFlow({
   }
 
   if (state === "error") {
+    const isTamperingError = isTampered || error?.includes("Payload Tampering Detected");
+
     return (
-      <div className="p-4 border border-red-300 rounded bg-red-50" data-testid="presigning-error">
-        <h3 className="text-red-700 font-bold mb-1">Pre-Signing Firewall Error</h3>
-        <p className="text-sm text-red-600">{error ?? "An unexpected error occurred"}</p>
+      <div
+        className={`p-4 border rounded ${
+          isTamperingError
+            ? "border-red-600 bg-red-50 text-red-950 shadow-md"
+            : "border-red-300 bg-red-50"
+        }`}
+        data-testid="presigning-error"
+      >
+        {isTamperingError ? (
+          <div data-testid="payload-tampering-alert">
+            <div className="flex items-center gap-2 text-red-700 font-bold text-base mb-1">
+              <span className="text-xl">🚨</span>
+              <span>Payload Tampering Detected</span>
+            </div>
+            <p className="text-xs text-red-800 mb-2 font-medium">
+              Cryptographic TOCTOU verification failed! The serialized transaction buffer immediately prior to wallet
+              invocation did not match the SHA-256 digest inspected by SOLVul. Transaction signing was aborted
+              immediately and the wallet API was not invoked.
+            </p>
+            <div className="text-xs font-mono bg-red-100 p-2 rounded border border-red-300 break-all text-red-900">
+              {error}
+            </div>
+          </div>
+        ) : (
+          <>
+            <h3 className="text-red-700 font-bold mb-1">Pre-Signing Firewall Error</h3>
+            <p className="text-sm text-red-600">{error ?? "An unexpected error occurred"}</p>
+          </>
+        )}
       </div>
     );
   }
@@ -297,9 +328,52 @@ export default function PreSigningFlow({
         )}
       </div>
 
-      <div className="text-xs text-slate-500 mb-3 font-mono break-all">
-        <span className="font-semibold text-slate-700">Payload SHA-256: </span>
-        {inspectedHash}
+      {/* Cryptographic TOCTOU Fingerprint & Decoded Message Header Counts */}
+      <div
+        className="mb-4 p-3.5 bg-slate-900 text-slate-100 rounded-lg border border-slate-700 shadow-xs"
+        data-testid="payload-fingerprint-panel"
+      >
+        <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-300 uppercase tracking-wider">
+            <span>🔒</span>
+            <span>Cryptographic Wire Payload Fingerprint (SHA-256)</span>
+          </div>
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+            {decodedTx?.version.toUpperCase() ?? "TX"} Wire Format
+          </span>
+        </div>
+
+        <div className="bg-slate-950 p-2 rounded border border-slate-800 font-mono text-xs text-emerald-400 break-all select-all">
+          <span data-testid="payload-sha256-fingerprint">{inspectedHash}</span>
+        </div>
+
+        {/* Decoded Message Header Counts */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 pt-2 border-t border-slate-800 text-[11px] font-mono">
+          <div className="bg-slate-800/80 p-1.5 rounded">
+            <span className="text-slate-400 block text-[10px]">Req. Signatures</span>
+            <span className="font-bold text-white text-xs">
+              {decodedTx?.message.header?.numRequiredSignatures ?? (decodedTx?.signatures.length || 1)}
+            </span>
+          </div>
+          <div className="bg-slate-800/80 p-1.5 rounded">
+            <span className="text-slate-400 block text-[10px]">Readonly Signed</span>
+            <span className="font-bold text-white text-xs">
+              {decodedTx?.message.header?.numReadonlySignedAccounts ?? 0}
+            </span>
+          </div>
+          <div className="bg-slate-800/80 p-1.5 rounded">
+            <span className="text-slate-400 block text-[10px]">Readonly Unsigned</span>
+            <span className="font-bold text-white text-xs">
+              {decodedTx?.message.header?.numReadonlyUnsignedAccounts ?? 0}
+            </span>
+          </div>
+          <div className="bg-slate-800/80 p-1.5 rounded">
+            <span className="text-slate-400 block text-[10px]">Total Accounts</span>
+            <span className="font-bold text-white text-xs">
+              {decodedTx?.message.accountKeys.length ?? 0}
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Summary */}
@@ -363,6 +437,18 @@ export default function PreSigningFlow({
         />
       </section>
 
+      {/* Verifiable Security Audit Receipt Export (.json / .md) */}
+      <section className="mb-4">
+        <AuditReceiptExport
+          base64Tx={base64Tx}
+          sha256Hash={inspectedHash ?? ""}
+          decodedTx={decodedTx}
+          riskAssessment={riskAssessment}
+          explanation={explanation}
+          isTampered={isTampered}
+        />
+      </section>
+
       {/* Decision / Action State */}
       <div className="pt-3 border-t mt-4">
         {state === "rejected" && (
@@ -406,7 +492,7 @@ export default function PreSigningFlow({
               className="px-4 py-2 bg-indigo-600 rounded text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
               data-testid="approve-button"
             >
-              Approve & Sign
+              Approve & Sign in Wallet
             </button>
           </div>
         )}

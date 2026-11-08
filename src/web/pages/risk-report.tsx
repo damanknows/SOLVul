@@ -14,6 +14,8 @@ import { retrieve } from "../../rag/retriever";
 import generateExplanation from "../../gemini/explanation";
 import CpiCallTree from "../components/inspector/CpiCallTree";
 import AccountDiffMatrix from "../components/inspector/AccountDiffMatrix";
+import AuditReceiptExport from "../components/AuditReceiptExport";
+import { sha256 } from "../utils/crypto";
 
 interface ReportState {
   logs?: string[];
@@ -29,6 +31,9 @@ const RiskReport: NextPage = () => {
   const [risk, setRisk] = useState<any>(null);
   const [simulation, setSimulation] = useState<ReportState>({});
   const [fullSimulation, setFullSimulation] = useState<any>(null);
+  const [sha256Hash, setSha256Hash] = useState<string>("");
+  const [explanation, setExplanation] = useState<any>(null);
+  const [citations, setCitations] = useState<any[]>([]);
 
   /** Demo fixture – use the same legacy transfer fixture as Overview */
   const demoBase64 = "AQABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"; // placeholder, replace with real fixture if needed
@@ -36,6 +41,9 @@ const RiskReport: NextPage = () => {
   useEffect(() => {
     async function run() {
       try {
+        const hash = await sha256(Buffer.from(demoBase64, "base64"));
+        setSha256Hash(hash);
+
         const decodedTx = await decodeTransaction(demoBase64);
         setDecoded(decodedTx);
         const { score, breakdown } = computeRiskScore(decodedTx, DEFAULT_RISK_CONFIG);
@@ -54,8 +62,10 @@ const RiskReport: NextPage = () => {
 
         // Retrieve evidence from RAG store (global store assumed)
         const retrieved = await retrieve("security", (global as any).vectorStore, 3);
+        setCitations(retrieved);
         // Generate explanation (will be validated by Zod)
-        generateExplanation(breakdown, retrieved);
+        const expl = generateExplanation(breakdown, retrieved);
+        setExplanation(expl);
       } catch (e: any) {
         setError(e?.message ?? "Failed to generate risk report");
       } finally {
@@ -75,7 +85,43 @@ const RiskReport: NextPage = () => {
     <>
       <NavBar />
       <main className="max-w-4xl mx-auto p-6">
-        <h1 className="text-2xl font-bold mb-4">Risk Report (Demo Fixture)</h1>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+          <h1 className="text-2xl font-bold">Risk Report (Demo Fixture)</h1>
+        </div>
+
+        {/* Prominent Cryptographic SHA-256 Wire Payload Fingerprint */}
+        <div className="mb-4 p-3 bg-slate-900 text-slate-100 rounded-lg border border-slate-700 shadow-xs font-mono text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <span className="text-slate-400 block text-[10px] uppercase tracking-wider font-sans font-bold">
+              🔒 Inspected Wire SHA-256 Fingerprint
+            </span>
+            <span className="text-emerald-400 font-bold select-all break-all">
+              {sha256Hash || "Computing fingerprint…"}
+            </span>
+          </div>
+          <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] w-fit">
+            {decoded?.version?.toUpperCase() ?? "TX"} Wire Format
+          </span>
+        </div>
+
+        {/* Downloadable Verifiable Security Audit Receipt (.json / .md) */}
+        <div className="mb-4">
+          <AuditReceiptExport
+            base64Tx={demoBase64}
+            sha256Hash={sha256Hash}
+            decodedTx={decoded}
+            riskAssessment={risk}
+            explanation={explanation}
+            ragCitations={citations.map((c: any) => ({
+              source: c.metadata?.title || c.metadata?.source || "Solana Security Corpus",
+              snippet: c.pageContent || c.content || "",
+              sourceUrl: c.metadata?.sourceUrl,
+              publisher: c.metadata?.publisher,
+              trustLevel: c.metadata?.trustLevel,
+            }))}
+          />
+        </div>
+
         <UnsupportedNotice count={unsupportedCount} />
         <ResultCard title="STRS Score">
           {risk?.score ?? "N/A"}

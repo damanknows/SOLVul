@@ -139,7 +139,7 @@ describe("PreSigningFlow Component", () => {
     expect(errorEl.textContent).toContain("User rejected signature request");
   });
 
-  test("4. Hash mismatch blocks signing (Cryptographic Transaction Binding)", async () => {
+  test("4. Hash mismatch blocks signing (Cryptographic TOCTOU Tampering Protection)", async () => {
     const signTransactionMock = jest.fn();
     const mockWallet: WalletProvider = {
       isPhantom: true,
@@ -147,7 +147,7 @@ describe("PreSigningFlow Component", () => {
       signTransaction: signTransactionMock,
     };
 
-    // Spy on sha256: return a different hash during pre-sign check
+    // Spy on sha256: return a different hash during pre-sign check to simulate TOCTOU tampering
     let callCount = 0;
     jest.spyOn(cryptoUtils, "sha256").mockImplementation(async () => {
       callCount++;
@@ -164,12 +164,21 @@ describe("PreSigningFlow Component", () => {
     });
 
     const approveBtn = await waitForElement("[data-testid='approve-button']");
+    expect(approveBtn.textContent).toContain("Approve & Sign in Wallet");
+
     await act(async () => {
       (approveBtn as HTMLButtonElement).click();
     });
 
+    // Verify critical Payload Tampering Detected alert
     const errorEl = await waitForElement("[data-testid='presigning-error']");
+    expect(errorEl.textContent).toContain("Payload Tampering Detected");
     expect(errorEl.textContent).toContain("Cryptographic transaction binding mismatch");
+
+    const tamperingAlert = await waitForElement("[data-testid='payload-tampering-alert']");
+    expect(tamperingAlert).not.toBeNull();
+
+    // Invariant: signTransaction MUST NOT be invoked when tampering is detected
     expect(signTransactionMock).not.toHaveBeenCalled();
   });
 
@@ -216,5 +225,33 @@ describe("PreSigningFlow Component", () => {
 
     // signTransaction must only be called once
     expect(signTransactionMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("6. Prominently displays SHA-256 wire payload fingerprint and decoded message header counts", async () => {
+    await act(async () => {
+      root.render(<PreSigningFlow base64Tx={validTxBase64} />);
+    });
+
+    const fingerprintPanel = await waitForElement("[data-testid='payload-fingerprint-panel']");
+    expect(fingerprintPanel).not.toBeNull();
+
+    const fingerprintEl = await waitForElement("[data-testid='payload-sha256-fingerprint']");
+    expect(fingerprintEl.textContent).toBeTruthy();
+    expect(fingerprintEl.textContent?.length).toBe(64); // SHA-256 hex string length
+
+    expect(fingerprintPanel.textContent).toContain("Req. Signatures");
+    expect(fingerprintPanel.textContent).toContain("Total Accounts");
+  });
+
+  test("7. Renders downloadable Audit Receipt Export card with JSON and Markdown buttons", async () => {
+    await act(async () => {
+      root.render(<PreSigningFlow base64Tx={validTxBase64} />);
+    });
+
+    const exportCard = await waitForElement("[data-testid='audit-receipt-export-card']");
+    expect(exportCard).not.toBeNull();
+
+    expect(container.querySelector("[data-testid='download-receipt-json-btn']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='download-receipt-md-btn']")).not.toBeNull();
   });
 });
