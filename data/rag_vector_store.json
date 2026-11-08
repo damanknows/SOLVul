@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "savedAt": "2026-11-08T09:06:35.109Z",
+  "savedAt": "2026-11-08T09:17:51.563Z",
   "count": 1,
   "entries": [
     {
@@ -145,7 +145,7 @@
         "section": "Duplication Section",
         "content": "## Duplication Section\nDeterministic test payload for deduplication testing.",
         "createdAt": "2024-01-01T00:00:00Z",
-        "ingestedAt": "2026-11-08T09:06:35.108Z",
+        "ingestedAt": "2026-11-08T09:17:51.561Z",
         "trustLevel": "authoritative"
       },
       "contentHash": "70474eff29a13ce22ddde11d983924cb77240be7808d9013c1d7a7f622193cd3"
