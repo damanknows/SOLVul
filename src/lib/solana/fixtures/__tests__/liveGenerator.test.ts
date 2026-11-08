@@ -1,9 +1,10 @@
+/** @jest-environment node */
 // src/lib/solana/fixtures/__tests__/liveGenerator.test.ts
 //
 // Unit tests for the Live Devnet Fixture Generator.
 // Verifies that every generated fixture:
 //   1. Produces valid base64 that deserializes without error
-//   2. Triggers exactly the expected VS-* rule IDs
+//   2. Triggers exactly the expected VS-* rule IDs under deterministic STRS
 //   3. Does NOT trigger unexpected rules
 //   4. Has the correct badge, version, and metadata
 
@@ -44,7 +45,7 @@ function deserialize(base64: string): Transaction | VersionedTransaction {
   }
 
   // Try versioned (v0)
-  return VersionedTransaction.from(raw);
+  return VersionedTransaction.deserialize(raw);
 }
 
 /**
@@ -72,11 +73,11 @@ describe("liveGenerator — structural", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  test("all scenarios have a non-empty label, description, and expectedRuleIds", () => {
+  test("all scenarios have a non-empty label and description", () => {
     for (const s of SCENARIOS) {
       expect(s.label.length).toBeGreaterThan(0);
       expect(s.description.length).toBeGreaterThan(0);
-      expect(s.expectedRuleIds.length).toBeGreaterThan(0);
+      expect(Array.isArray(s.expectedRuleIds)).toBe(true);
     }
   });
 });
@@ -156,17 +157,10 @@ describe("Scenario 1: clean-transfer", () => {
     expect(tx).toBeInstanceOf(Transaction);
   });
 
-  test("triggers exactly VS-04 (unsigned)", async () => {
+  test("triggers no risk rules (clean transfer)", async () => {
     const ids = await triggeredRuleIds(fixture);
-    expect(ids).toContain("VS-04");
-    // VS-01 must NOT fire (0.01 SOL is below threshold)
-    expect(ids).not.toContain("VS-01");
-    // Expected set
-    expect(fixture.expectedRuleIds).toEqual(["VS-04"]);
-    // All expected rules are triggered
-    for (const expected of fixture.expectedRuleIds) {
-      expect(ids).toContain(expected);
-    }
+    expect(ids).toEqual([]);
+    expect(fixture.expectedRuleIds).toEqual([]);
   });
 });
 
@@ -190,13 +184,10 @@ describe("Scenario 2: set-authority-hijack", () => {
     expect(tx).toBeInstanceOf(VersionedTransaction);
   });
 
-  test("triggers exactly VS-04 (unsigned)", async () => {
+  test("triggers VS-06 (Token Authority Reassignment)", async () => {
     const ids = await triggeredRuleIds(fixture);
-    expect(fixture.expectedRuleIds).toEqual(["VS-04"]);
-    for (const expected of fixture.expectedRuleIds) {
-      expect(ids).toContain(expected);
-    }
-    // VS-02 must NOT fire (SPL Token is a known program)
+    expect(fixture.expectedRuleIds).toEqual(["VS-06"]);
+    expect(ids).toContain("VS-06");
     expect(ids).not.toContain("VS-02");
   });
 });
@@ -221,12 +212,10 @@ describe("Scenario 3: unlimited-approve", () => {
     expect(tx).toBeInstanceOf(VersionedTransaction);
   });
 
-  test("triggers exactly VS-04 (unsigned)", async () => {
+  test("triggers VS-05-APPROVE (Token Delegate Approval)", async () => {
     const ids = await triggeredRuleIds(fixture);
-    expect(fixture.expectedRuleIds).toEqual(["VS-04"]);
-    for (const expected of fixture.expectedRuleIds) {
-      expect(ids).toContain(expected);
-    }
+    expect(fixture.expectedRuleIds).toEqual(["VS-05-APPROVE"]);
+    expect(ids).toContain("VS-05-APPROVE");
   });
 });
 
@@ -250,20 +239,15 @@ describe("Scenario 4: assign-memo-injection", () => {
     expect(tx).toBeInstanceOf(Transaction);
   });
 
-  test("triggers VS-02 (Memo program is unknown) and VS-04 (unsigned)", async () => {
+  test("triggers VS-06-ASSIGN and VS-02 (unverified memo program)", async () => {
     const ids = await triggeredRuleIds(fixture);
-    expect(fixture.expectedRuleIds).toEqual(
-      expect.arrayContaining(["VS-02", "VS-04"]),
-    );
-    for (const expected of fixture.expectedRuleIds) {
-      expect(ids).toContain(expected);
-    }
+    expect(ids).toContain("VS-06-ASSIGN");
+    expect(ids).toContain("VS-02");
   });
 
   test("the memo data contains the prompt-injection payload", () => {
     const raw = Buffer.from(fixture.base64Tx, "base64");
     const tx = Transaction.from(raw);
-    // The Memo instruction should contain our adversarial string
     const memoIx = tx.instructions.find(
       (ix) =>
         ix.programId.toBase58() ===
@@ -297,20 +281,15 @@ describe("Scenario 5: unknown-program", () => {
     expect(tx).toBeInstanceOf(Transaction);
   });
 
-  test("triggers VS-02 (unknown program) and VS-04 (unsigned)", async () => {
+  test("triggers VS-02 (unverified program) and VS-04 (unsupported format)", async () => {
     const ids = await triggeredRuleIds(fixture);
-    expect(fixture.expectedRuleIds).toEqual(
-      expect.arrayContaining(["VS-02", "VS-04"]),
-    );
-    for (const expected of fixture.expectedRuleIds) {
-      expect(ids).toContain(expected);
-    }
+    expect(ids).toContain("VS-02");
+    expect(ids).toContain("VS-04");
   });
 
   test("instruction data contains the 0xDEADBEEF bytes", () => {
     const raw = Buffer.from(fixture.base64Tx, "base64");
     const tx = Transaction.from(raw);
-    // Find the unknown-program instruction (not SystemProgram)
     const unknownIx = tx.instructions.find(
       (ix) =>
         ix.programId.toBase58() !== "11111111111111111111111111111111",

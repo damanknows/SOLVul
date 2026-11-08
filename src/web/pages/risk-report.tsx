@@ -5,12 +5,12 @@ import LoadingSpinner from "../components/LoadingSpinner";
 import ResultCard from "../components/ResultCard";
 import UnsupportedNotice from "../components/UnsupportedNotice";
 import { useEffect, useState } from "react";
-import { decodeTransaction } from "../solana/transactionDecoder";
-import { computeRiskScore, DEFAULT_RISK_CONFIG } from "../solana/transactionRiskScore";
-import { simulateTransaction } from "../solana/simulateTransaction";
+import { decodeTransaction } from "../../solana/transactionDecoder";
+import { computeRiskScore, DEFAULT_RISK_CONFIG } from "../../solana/transactionRiskScore";
+import { simulateTransaction } from "../../solana/simulateTransaction";
 import { Connection } from "@solana/web3.js";
-import { retrieve } from "../rag/retriever";
-import generateExplanation from "../gemini/explanation";
+import { retrieve } from "../../rag/retriever";
+import generateExplanation from "../../gemini/explanation";
 
 interface ReportState {
   logs?: string[];

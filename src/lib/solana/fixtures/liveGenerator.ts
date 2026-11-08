@@ -138,8 +138,8 @@ function generateCleanTransfer(
     scenarioId: "clean-transfer",
     label: "Clean 0.01 SOL SystemProgram transfer",
     description:
-      "Single SystemProgram.transfer of 0.01 SOL. Only VS-04 fires because the tx is unsigned.",
-    expectedRuleIds: ["VS-04"],
+      "Single SystemProgram.transfer of 0.01 SOL. No risk rules triggered (clean transaction).",
+    expectedRuleIds: [],
     base64Tx: legacyToBase64(tx),
     version: "legacy",
     badge: "Synthesized Devnet Test Fixture",
@@ -205,8 +205,8 @@ function generateSetAuthorityHijack(
     scenarioId: "set-authority-hijack",
     label: "SPL Token SetAuthority ownership hijack",
     description:
-      "SetAuthority(MintTokens) to an attacker pubkey via SPL Token program. VS-04 fires (unsigned).",
-    expectedRuleIds: ["VS-04"],
+      "SetAuthority(MintTokens) to an attacker pubkey via SPL Token program. Triggers VS-06 (Token Authority Reassignment).",
+    expectedRuleIds: ["VS-06"],
     base64Tx: v0ToBase64(vtx),
     version: "v0",
     badge: "Synthesized Devnet Test Fixture",
@@ -270,8 +270,8 @@ function generateUnlimitedApprove(
     scenarioId: "unlimited-approve",
     label: "SPL Token Approve delegate drain",
     description:
-      "Approve u64::MAX tokens to attacker delegate via SPL Token program. VS-04 fires (unsigned).",
-    expectedRuleIds: ["VS-04"],
+      "Approve u64::MAX tokens to attacker delegate via SPL Token program. Triggers VS-05-APPROVE (Token Delegate Approval).",
+    expectedRuleIds: ["VS-05-APPROVE"],
     base64Tx: v0ToBase64(vtx),
     version: "v0",
     badge: "Synthesized Devnet Test Fixture",
@@ -335,8 +335,8 @@ function generateAssignMemoInjection(
     label: "SystemProgram::Assign + adversarial Memo",
     description:
       "Reassigns account owner via Assign, plus a Memo prompt-injection payload. " +
-      "VS-02 fires (Memo program not in known set) and VS-04 fires (unsigned).",
-    expectedRuleIds: ["VS-02", "VS-04"],
+      "Triggers VS-06-ASSIGN (Account owner reassignment), VS-02 (Unverified program), and VS-04 (Unsupported instruction data).",
+    expectedRuleIds: ["VS-06-ASSIGN", "VS-02", "VS-04"],
     base64Tx: legacyToBase64(tx),
     version: "legacy",
     badge: "Synthesized Devnet Test Fixture",
@@ -354,11 +354,7 @@ function generateAssignMemoInjection(
  *
  * Triggered rules:
  *   VS-02  — random program ID is not in the known programs set
- *   VS-04  — unsigned transaction
- *
- * NOT triggered:
- *   VS-01  — no SOL transfer
- *   VS-07  — data is non-empty (4 bytes)
+ *   VS-04  — unsupported / unverified instruction data
  */
 function generateUnknownProgram(
   payerPubkey: PublicKey,
@@ -386,7 +382,7 @@ function generateUnknownProgram(
     label: "Unknown/unverified Program ID invocation",
     description:
       "Single instruction to a random program ID with 0xDEADBEEF data. " +
-      "VS-02 fires (unknown program) and VS-04 fires (unsigned).",
+      "Triggers VS-02 (Unverified program) and VS-04 (Unsupported instruction data).",
     expectedRuleIds: ["VS-02", "VS-04"],
     base64Tx: legacyToBase64(tx),
     version: "legacy",
@@ -403,8 +399,8 @@ export const SCENARIOS: ScenarioDefinition[] = [
     id: "clean-transfer",
     label: "Clean 0.01 SOL SystemProgram transfer",
     description:
-      "Single SystemProgram.transfer of 0.01 SOL. Only VS-04 fires because the tx is unsigned.",
-    expectedRuleIds: ["VS-04"],
+      "Single SystemProgram.transfer of 0.01 SOL. No risk rules triggered (clean transaction).",
+    expectedRuleIds: [],
     version: "legacy",
     generate: generateCleanTransfer,
   },
@@ -412,8 +408,8 @@ export const SCENARIOS: ScenarioDefinition[] = [
     id: "set-authority-hijack",
     label: "SPL Token SetAuthority ownership hijack",
     description:
-      "SetAuthority(MintTokens) to an attacker pubkey via SPL Token program. VS-04 fires (unsigned).",
-    expectedRuleIds: ["VS-04"],
+      "SetAuthority(MintTokens) to an attacker pubkey via SPL Token program. Triggers VS-06 (Token Authority Reassignment).",
+    expectedRuleIds: ["VS-06"],
     version: "v0",
     generate: generateSetAuthorityHijack,
   },
@@ -421,8 +417,8 @@ export const SCENARIOS: ScenarioDefinition[] = [
     id: "unlimited-approve",
     label: "SPL Token Approve delegate drain",
     description:
-      "Approve u64::MAX tokens to attacker delegate via SPL Token program. VS-04 fires (unsigned).",
-    expectedRuleIds: ["VS-04"],
+      "Approve u64::MAX tokens to attacker delegate via SPL Token program. Triggers VS-05-APPROVE (Token Delegate Approval).",
+    expectedRuleIds: ["VS-05-APPROVE"],
     version: "v0",
     generate: generateUnlimitedApprove,
   },
@@ -431,8 +427,8 @@ export const SCENARIOS: ScenarioDefinition[] = [
     label: "SystemProgram::Assign + adversarial Memo",
     description:
       "Reassigns account owner via Assign, plus a Memo prompt-injection payload. " +
-      "VS-02 fires (Memo program not in known set) and VS-04 fires (unsigned).",
-    expectedRuleIds: ["VS-02", "VS-04"],
+      "Triggers VS-06-ASSIGN (Account owner reassignment), VS-02 (Unverified program), and VS-04 (Unsupported instruction data).",
+    expectedRuleIds: ["VS-06-ASSIGN", "VS-02", "VS-04"],
     version: "legacy",
     generate: generateAssignMemoInjection,
   },
@@ -441,7 +437,7 @@ export const SCENARIOS: ScenarioDefinition[] = [
     label: "Unknown/unverified Program ID invocation",
     description:
       "Single instruction to a random program ID with 0xDEADBEEF data. " +
-      "VS-02 fires (unknown program) and VS-04 fires (unsigned).",
+      "Triggers VS-02 (Unverified program) and VS-04 (Unsupported instruction data).",
     expectedRuleIds: ["VS-02", "VS-04"],
     version: "legacy",
     generate: generateUnknownProgram,

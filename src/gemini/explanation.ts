@@ -5,8 +5,8 @@ import type { RetrievalResult } from "../rag/retriever";
 
 /** Zod schemas for strict validation */
 const EvidenceSchema = z.object({
-  source: z.string(),
-  uri: z.string(),
+  source: z.string().min(1, "Source must not be empty"),
+  uri: z.string().url("URI must be a valid URL"),
   snippet: z.string(),
 });
 

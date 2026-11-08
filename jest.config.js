@@ -2,10 +2,12 @@
 module.exports = {
   testEnvironment: "jsdom",
   transform: {
-    "^.+\\.(ts|tsx)$": "ts-jest",
+    "^.+\\.(ts|tsx)$": ["ts-jest", { tsconfig: { jsx: "react-jsx" } }],
   },
-  moduleFileExtensions: ["ts", "tsx", "js", "json"],
-  setupFilesAfterEnv: ["@testing-library/jest-dom/extend-expect"],
+  setupFilesAfterEnv: ["<rootDir>/jest.setup.js", "@testing-library/jest-dom"],
+  moduleNameMapper: {
+    "^uuid$": require.resolve("uuid"),
+  },
   testPathIgnorePatterns: ["/node_modules/", "/dist/"],
   collectCoverage: true,
   coverageDirectory: "coverage",

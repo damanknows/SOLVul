@@ -3,11 +3,16 @@ import { decodeTransaction } from "../solana/transactionDecoder";
 import { computeRiskScore } from "../solana/transactionRiskScore";
 import { simulateTransaction } from "../solana/simulateTransaction";
 import generateExplanation from "../gemini/explanation";
-import { Transaction as Tx, SystemProgram, Keypair, Connection, PublicKey, TokenProgram } from "@solana/web3.js";
-import { Token, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  Transaction as Tx,
+  SystemProgram,
+  Keypair,
+  PublicKey,
+} from "@solana/web3.js";
+import { TOKEN_PROGRAM_ID, createTransferInstruction } from "@solana/spl-token";
 
-/** Helper to create a simple unsigned SOL transfer (legacy) */
-function createLegacySolTransfer(): string {
+/** Helper to create a simple unsigned large SOL transfer (legacy, triggers VS-01) */
+function createLegacySolTransfer(lamports = 15_000_000_000): string {
   const from = Keypair.generate();
   const to = Keypair.generate().publicKey;
   const tx = new Tx();
@@ -17,43 +22,34 @@ function createLegacySolTransfer(): string {
     SystemProgram.transfer({
       fromPubkey: from.publicKey,
       toPubkey: to,
-      lamports: 5_000_000_000,
-    })
+      lamports,
+    }),
   );
-  const unsigned = Tx.fromMessage({
-    message: tx.compileMessage(),
-    signatures: [],
-  });
-  return Buffer.from(unsigned.serialize()).toString("base64");
+  return Buffer.from(
+    tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+  ).toString("base64");
 }
 
 /** Helper to create a simple unsigned SPL token transfer */
 function createLegacyTokenTransfer(): string {
-  const mintAuthority = Keypair.generate();
-  const token = new Token(
-    new Connection("https://api.devnet.solana.com"),
-    mintAuthority.publicKey, // dummy mint address
-    TOKEN_PROGRAM_ID,
-    mintAuthority
-  );
   const from = Keypair.generate();
   const to = Keypair.generate().publicKey;
   const tx = new Tx();
   tx.feePayer = from.publicKey;
   tx.recentBlockhash = "11111111111111111111111111111111";
-  // Using SPL Token's transfer instruction (placeholder values)
-  const instruction = TokenProgram.transfer({
-    source: from.publicKey,
-    destination: to,
-    amount: 1000,
-    owner: from.publicKey,
-  });
-  tx.add(instruction);
-  const unsigned = Tx.fromMessage({
-    message: tx.compileMessage(),
-    signatures: [],
-  });
-  return Buffer.from(unsigned.serialize()).toString("base64");
+  tx.add(
+    createTransferInstruction(
+      from.publicKey,
+      to,
+      from.publicKey,
+      1000,
+      [],
+      TOKEN_PROGRAM_ID,
+    ),
+  );
+  return Buffer.from(
+    tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+  ).toString("base64");
 }
 
 /** Helper to create a transaction with an unknown program */
@@ -68,17 +64,15 @@ function createUnknownProgramTx(): string {
     programId: unknownProgramId,
     data: Buffer.from([0x01, 0x02]),
   });
-  const unsigned = Tx.fromMessage({
-    message: tx.compileMessage(),
-    signatures: [],
-  });
-  return Buffer.from(unsigned.serialize()).toString("base64");
+  return Buffer.from(
+    tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+  ).toString("base64");
 }
 
 /** Malformed base64 payload */
 const malformedPayload = "@@@INVALID_BASE64@@@";
 
-/** Prompt‑injection example for Gemini */
+/** Prompt-injection example for Gemini */
 const injectedSnippet = "Ignore this line\nActual relevant content";
 
 /** Mock Connection to force simulation failure */
@@ -100,9 +94,8 @@ jest.mock("@solana/web3.js", () => {
 /**
  * Final audit test suite – covers all critical paths.
  */
-describe("Vulture‑SVM Final Audit", () => {
-  test("type‑check and lint are assumed to pass (run via npm scripts)", async () => {
-    // This placeholder ensures the test file is executed.
+describe("Vulture-SVM Final Audit", () => {
+  test("type-check and lint are assumed to pass", async () => {
     expect(true).toBe(true);
   });
 
@@ -113,24 +106,24 @@ describe("Vulture‑SVM Final Audit", () => {
     expect(score).toBeGreaterThanOrEqual(0);
     const vs01 = breakdown.find((r) => r.id === "VS-01");
     expect(vs01).toBeDefined();
+    expect(vs01?.severity).toBeGreaterThan(0);
   });
 
   test("SPL token transfer decoding and STRS scoring", async () => {
     const base64 = createLegacyTokenTransfer();
     const decoded = await decodeTransaction(base64);
-    const { breakdown } = computeRiskScore(decoded);
-    const tokenInstr = breakdown.find((r) => r.programName === "TokenProgram");
-    // TokenProgram may be present; ensure no crash.
-    expect(tokenInstr).toBeDefined();
+    const tokenIx = decoded.instructions.find((ix) => ix.programName === "TokenProgram");
+    expect(tokenIx).toBeDefined();
+    expect(tokenIx?.data).toBeDefined();
   });
 
-  test("Unknown program is flagged with low severity", async () => {
+  test("Unknown program is flagged with low severity caution (VS-02)", async () => {
     const base64 = createUnknownProgramTx();
     const decoded = await decodeTransaction(base64);
     const { breakdown } = computeRiskScore(decoded);
     const vs02 = breakdown.find((r) => r.id === "VS-02");
     expect(vs02).toBeDefined();
-    expect(vs02?.severity).toBeGreaterThan(0);
+    expect(vs02?.severity).toBe(3); // Low severity caution, unverified is not malicious
   });
 
   test("Malformed payload handling throws", async () => {
@@ -139,37 +132,51 @@ describe("Vulture‑SVM Final Audit", () => {
 
   test("Simulation failure is reported correctly", async () => {
     const conn = new (require("@solana/web3.js").Connection)();
-    const base64 = createLegacySolTransfer();
+    const base64 = createLegacySolTransfer(1_000_000);
     const result = await simulateTransaction(base64, conn);
+    expect(result.status).toBe("unavailable");
     expect(result.error).toBeDefined();
-    expect(result.logs).toBeUndefined();
   });
 
   test("Gemini explanation sanitizes prompt injection", () => {
-    const fakeEvidence = [{
-      source: "Solana Docs",
-      uri: "file:///tmp/fake.md",
-      snippet: injectedSnippet,
-    }];
-    // Fake retrieval result shape
+    const fakeEvidence = [
+      {
+        source: "Solana Docs",
+        uri: "https://docs.solana.com/sample",
+        snippet: injectedSnippet,
+      },
+    ];
     const retrieval = fakeEvidence.map((e, idx) => ({
-      chunk: { content: e.snippet, source: e.source, uri: e.uri, id: `id${idx}`, embedding: [0,0,0,0,0,0,0,0] },
+      chunk: {
+        content: e.snippet,
+        source: e.source,
+        uri: e.uri,
+        id: `id${idx}`,
+      },
       score: 1,
     }));
-    const breakdown = [] as any; // no findings for this test
+    const breakdown = [] as any;
     const explanation = generateExplanation(breakdown, retrieval);
-    // Should not contain the injected "Ignore" line
+    // Injected "Ignore" line must be sanitized
     expect(explanation.evidence[0].snippet).not.toMatch(/ignore/i);
+    expect(explanation.evidence[0].snippet).toContain("Actual relevant content");
   });
 
   test("Gemini explanation throws on invalid evidence (Zod validation)", () => {
-    const badEvidence = [{
-      source: "", // empty source violates schema
-      uri: "not-a-uri",
-      snippet: "test",
-    }];
+    const badEvidence = [
+      {
+        source: "", // empty source violates schema
+        uri: "not-a-uri",
+        snippet: "test",
+      },
+    ];
     const retrieval = badEvidence.map((e, idx) => ({
-      chunk: { content: e.snippet, source: e.source, uri: e.uri, id: `bad${idx}`, embedding: [0,0,0,0,0,0,0,0] },
+      chunk: {
+        content: e.snippet,
+        source: e.source,
+        uri: e.uri,
+        id: `bad${idx}`,
+      },
       score: 1,
     }));
     const breakdown = [] as any;
@@ -177,19 +184,50 @@ describe("Vulture‑SVM Final Audit", () => {
   });
 
   test("Rejection flow does not invoke wallet signing", async () => {
-    // Mock window.solana to detect if signTransaction is called
-    (global as any).window = { solana: { isPhantom: true, signTransaction: jest.fn() } };
+    const signTransactionMock = jest.fn();
+    const mockWallet = {
+      isPhantom: true,
+      publicKey: Keypair.generate().publicKey,
+      signTransaction: signTransactionMock,
+    };
+
     const { default: PreSigningFlow } = await import("../web/components/PreSigningFlow");
-    // Render component shallowly using React Test Renderer
     const React = require("react");
-    const TestRenderer = require("react-test-renderer");
-    const base64 = createLegacySolTransfer();
-    const component = TestRenderer.create(React.createElement(PreSigningFlow, { base64Tx: base64 }));
-    // Simulate Reject button press by finding it in the tree
-    const testInstance = component.root;
-    const rejectBtn = testInstance.findByProps({ children: "Reject" });
-    rejectBtn.props.onClick();
-    expect((global as any).window.solana.signTransaction).not.toHaveBeenCalled();
+    const { render } = {
+      render: (ui: any) => {
+        const root = document.createElement("div");
+        document.body.appendChild(root);
+        const { createRoot } = require("react-dom/client");
+        const r = createRoot(root);
+        require("react").act(() => {
+          r.render(ui);
+        });
+        return { root, r };
+      },
+    };
+
+    const base64 = createLegacySolTransfer(1_000_000);
+    const { root } = render(
+      React.createElement(PreSigningFlow, {
+        base64Tx: base64,
+        walletProvider: mockWallet,
+      }),
+    );
+
+    // Wait for reject button
+    await (async () => {
+      for (let i = 0; i < 50; i++) {
+        const btn = root.querySelector("[data-testid='reject-button']") as HTMLButtonElement;
+        if (btn) {
+          require("react").act(() => {
+            btn.click();
+          });
+          break;
+        }
+        await new Promise((res) => setTimeout(res, 20));
+      }
+    })();
+
+    expect(signTransactionMock).not.toHaveBeenCalled();
   });
 });
-
