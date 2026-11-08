@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/validate-production-css.js",
+    "build": "rm -rf .next && next build && node scripts/validate-production-css.js",
     "validate:css": "node scripts/validate-production-css.js",
     "start": "next start",
     "lint": "eslint src",
