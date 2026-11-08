@@ -10,13 +10,13 @@ import { decodeTransaction } from "../../solana/transactionDecoder";
 import { computeRiskScore, DEFAULT_RISK_CONFIG } from "../../solana/transactionRiskScore";
 import { simulateTransaction } from "../../solana/simulateTransaction";
 import { Connection } from "@solana/web3.js";
-import { retrieve } from "../../rag/retriever";
-import generateExplanation from "../../gemini/explanation";
 import CpiCallTree from "../components/inspector/CpiCallTree";
 import AccountDiffMatrix from "../components/inspector/AccountDiffMatrix";
 import AuditReceiptExport from "../components/AuditReceiptExport";
 import GuardrailVerificationStrip from "../components/report/GuardrailVerificationStrip";
 import { sha256 } from "../utils/crypto";
+import { retrieve } from "../../rag/retriever";
+import { generateExplanation } from "../../gemini/explanation";
 
 interface ReportState {
   logs?: string[];
@@ -62,12 +62,23 @@ const RiskReport: NextPage = () => {
           evidenceCount: simResult.returnedAccounts ? Object.keys(simResult.returnedAccounts).length : 0,
         });
 
-        // Retrieve evidence from RAG store (global store assumed)
-        const retrieved = await retrieve("security", (global as any).vectorStore, 3);
-        setCitations(retrieved);
-        // Generate explanation (will be validated by Zod)
-        const expl = generateExplanation(breakdown, retrieved);
-        setExplanation(expl);
+        // Fetch explanation and citations from backend API
+        try {
+          const res = await fetch("/api/gemini/explain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ base64Tx: demoBase64 }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.explanation) setExplanation(data.explanation);
+            if (Array.isArray(data.findingEvidence)) {
+              setCitations(data.findingEvidence.flatMap((fe: any) => fe.evidenceChunks || []));
+            }
+          }
+        } catch {
+          // Fallback or network error handled gracefully
+        }
       } catch (e: any) {
         setError(e?.message ?? "Failed to generate risk report");
       } finally {
