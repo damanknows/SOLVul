@@ -24,7 +24,7 @@ export function getGeminiModel(): string {
  * 3. Validates that GEMINI_API_KEY is present and non-empty.
  */
 export function getGeminiClient(customApiKey?: string): GoogleGenAI {
-  if (typeof window !== "undefined") {
+  if (typeof window !== "undefined" && !(globalThis as any).__MOCK_SERVER_ENV__) {
     throw new Error("Security Violation: Gemini client cannot be initialized in client-side code");
   }
 

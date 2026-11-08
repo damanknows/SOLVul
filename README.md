@@ -4,7 +4,7 @@
 [![Next.js](https://img.shields.io/badge/Next.js-14.2-black.svg?logo=next.js)](https://nextjs.org/)
 [![Solana](https://img.shields.io/badge/Solana-@solana/web3.js%20v1.95-purple.svg?logo=solana)](https://solana.com/)
 [![Google Gemini](https://img.shields.io/badge/Google%20Gemini-@google/genai-orange.svg?logo=google)](https://ai.google.dev/)
-[![Jest Tests](https://img.shields.io/badge/Jest%20Tests-18%20Suites%20Passing-brightgreen.svg)](https://jestjs.io/)
+[![Jest Tests](https://img.shields.io/badge/Jest%20Tests-24%20Suites%20Passing-brightgreen.svg)](https://jestjs.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > **SOLVul** (`https://github.com/damanknows/SOLVul`) is an evidence-based, deterministic pre-flight transaction security firewall, visual simulation inspector, and verifiable intelligence engine for the Solana Virtual Machine (SVM).
@@ -272,8 +272,9 @@ SOLVul hardens the end-to-end retrieval-to-prompt boundary against data poisonin
 2. **Cryptographic Chunk Content Hash**: Every indexed chunk computes and verifies its SHA-256 content hash (`crypto.createHash('sha256').update(content).digest('hex')`), rejecting corrupted or tampered chunks during ingestion.
 3. **Retrieval-to-Prompt Sanitizer Integration**: The unified RAG security sanitizer (`sanitizeUntrustedContent`) strips control characters and neutralizes injection patterns (`SYSTEM:`, `### INSTRUCTION`, `OUTPUT SAFE`, `OVERRIDE SECURITY`, `[INSTRUCTION]`) and code block breakouts (` \`\`\` ` $\rightarrow$ `'''`).
 4. **Structural Delimiter Isolation**: Retrieved evidence excerpts are wrapped in `<UNTRUSTED_EVIDENCE_EXCERPT>` containers with explicit provenance tags (`id`, `title`, `trust_level`, `source`) and `[EVIDENCE_DATA_START]` / `[EVIDENCE_DATA_END]` guards. Attempted delimiter injection closing tags are neutralized.
-5. **Truthful Evidence Summaries**: If unverified or community sources are retrieved, the summary reflects this accurately and never overclaims that unverified documents are authoritative.
-6. **Lexical Fallback & Operational Telemetry**: When upstream embedding services encounter timeouts or rate limits, the retriever automatically falls back to lexical keyword search without crashing. Real-time RAG operational telemetry (`getRAGStatus()`) reports initialization state, document/chunk counts, embedding provider/model, and sanitized error messages with zero disclosure of credentials or local filesystem paths.
+### Vector Store Persistence Guarantees
+- **Local & Persistent Environments**: In standard Node.js server environments, vector embeddings are persisted to a structured JSON database (`data/rag/vector-store.json` or the path specified via `RAG_VECTOR_STORE_PATH` / `RAG_VECTOR_STORE`).
+- **Serverless & Containerized Deployments**: On platforms with ephemeral filesystems (e.g., Vercel serverless functions, AWS Lambda, ephemeral container pods without persistent volume claims), disk writes do not persist across instance recycles. For serverless deployments, vector stores should be indexed during the build step (`npm run rag:ingest`), and runtime fallback to lexical keyword search or in-memory vector caching is maintained automatically with zero system crashes.
 
 ---
 
@@ -303,19 +304,20 @@ To protect users against **Time-of-Check to Time-of-Use (TOCTOU)** payload tampe
    Immediately upon decoding, SOLVul computes the SHA-256 digest of the raw wire bytes via the Web Crypto API:
    $$\text{Hash}_{\text{inspected}} = \text{SHA-256}(\text{Raw Wire Bytes})$$
    This fingerprint is displayed in the Firewall panel alongside the decoded message header counts (`numRequiredSignatures`, `numReadonlySignedAccounts`, `numReadonlyUnsignedAccounts`, `totalAccounts`).
-2. **Pre-Sign Re-Hash Validation**:
+2. **Wallet Signer Verification & Protection (Phase 16.4)**:
+   - Evaluates `numRequiredSignatures` from the decoded transaction header and maps all required signer public keys.
+   - Compares the connected wallet's public key against the transaction's required signers.
+   - If the connected wallet is not a required signer or fee payer, signing is **hard-blocked** with a clear warning: `"Wallet Signer Mismatch Detected: Connected wallet is not a required signer"`. No transaction is sent to the wallet for signature.
+3. **Pre-Sign Re-Hash Validation (TOCTOU)**:
    When the user clicks `"Approve & Sign in Wallet"`, the serialized transaction buffer is re-serialized and re-hashed immediately prior to invoking Phantom's `signTransaction`:
    $$\text{Hash}_{\text{presign}} = \text{SHA-256}(\text{Re-Serialized Transaction Bytes})$$
    If $\text{Hash}_{\text{presign}} \neq \text{Hash}_{\text{inspected}}$, signing is **aborted immediately**, the wallet API is never called, and a critical `🚨 Payload Tampering Detected` alert is rendered.
-3. **Verifiable Audit Receipt Export (`.json` / `.md`)**:
-   Users and compliance teams can download a self-contained, cryptographically bound Security Audit Receipt including:
-   - Wire Payload SHA-256 Fingerprint
-   - ISO-8601 Timestamp & Client Version
-   - STRS Score, Risk Level & 6-Dimension Breakdown
-   - All Deterministic `VS-*` Findings with Severity & Confidence
-   - Retrieved RAG Evidence Citations & Trust Levels
-   - Simulation Status & Account State Diffs
-   - Cryptographic TOCTOU Integrity Status (`VERIFIED` / `TAMPERED`)
+4. **Verifiable Audit Receipt Export (`.json` / `.md`)**:
+   Users and compliance teams can download a self-contained, cryptographically bound Security Audit Receipt. Receipts evaluated by `verifyAuditReceipt` yield four distinct states:
+   - **`VERIFIED`**: Exact bit-for-bit wire hash match (`computedHash === payload.sha256`), valid Base64 payload, and consistent STRS score and findings.
+   - **`TAMPERED`**: The cryptographic hash of the transaction bytes does not match the inspected hash (`computedHash !== payload.sha256`), indicating payload mutation between inspection and signing.
+   - **`UNVERIFIED`**: Critical verification fields (e.g. `sha256`, `base64Payload`, `recentBlockhash`) are missing, empty, or ungrounded.
+   - **`VERIFICATION_FAILED`**: The payload failed Base64 validation or cryptographic hashing threw an error.
 
 ---
 
@@ -341,7 +343,9 @@ SOLVul adheres to strict engineering honesty. The following constraints define i
    v0 transactions referencing newly created or offline lookup tables cannot resolve dynamic account keys without RPC connectivity. When unresolvable, SOLVul halts deep instruction inspection and reports the unresolved tables explicitly.
 4. **Token Value Oracle Boundaries**:
    SOLVul evaluates token transfers and mints in raw base units. Calculating real-time USD/SOL economic value requires active oracle feeds (e.g. Pyth, Switchboard), which are subject to external oracle latency and manipulation.
-5. **Pre-Sign Firewall Scope**:
+5. **Simulation Safety & Mempool Dynamics**:
+   Simulation reflects ledger state at the exact moment of execution on the target RPC node. Dynamic on-chain conditions (slippage, front-running, state changes by concurrent transactions, or expired recent blockhashes) can cause mainnet execution to differ from pre-flight simulation. Simulation failure is **not proof of malice**; network latency, blockhash expiration, or temporary lack of faucet funds on Devnet can trigger simulation errors. SOLVul explicitly labels simulation limitations to avoid false accusations of malicious intent.
+6. **Pre-Sign Firewall Scope**:
    SOLVul validates transactions **before signing**. It does not replace on-chain program invariants, validator consensus, or multi-signature governance rules.
 
 ---
@@ -375,6 +379,7 @@ NEXT_PUBLIC_API_URL=http://localhost:3000
 RAG_EMBEDDING_PROVIDER=google
 RAG_EMBEDDING_MODEL=gemini-embedding-001
 RAG_VECTOR_STORE=persistent-json
+RAG_VECTOR_STORE_PATH=data/rag/vector-store.json
 RAG_MIN_RELEVANCE_SCORE=0.65
 RAG_TOP_K=4
 ```
@@ -389,7 +394,7 @@ npm run type-check
 ```bash
 npm test
 ```
-*Expected output: All 18 test suites passing (163+ unit and integration tests).*
+*Expected output: All 24 test suites passing (225+ unit and integration tests).*
 
 ### 5. Build for Production
 ```bash

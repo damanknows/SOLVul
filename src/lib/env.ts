@@ -20,6 +20,7 @@ export const envSchema = z.object({
   RAG_EMBEDDING_PROVIDER: z.string().default("google"),
   RAG_EMBEDDING_MODEL: z.string().default("gemini-embedding-001"),
   RAG_VECTOR_STORE: z.string().default("persistent-json"),
+  RAG_VECTOR_STORE_PATH: z.string().default("data/rag_vector_store.json"),
   RAG_MIN_RELEVANCE_SCORE: z.string().default("0.65"),
   RAG_TOP_K: z.string().default("4"),
 });
@@ -37,6 +38,7 @@ export const env: Env = envSchema.parse({
   RAG_EMBEDDING_PROVIDER: process.env.RAG_EMBEDDING_PROVIDER || "google",
   RAG_EMBEDDING_MODEL: process.env.RAG_EMBEDDING_MODEL || "gemini-embedding-001",
   RAG_VECTOR_STORE: process.env.RAG_VECTOR_STORE || "persistent-json",
+  RAG_VECTOR_STORE_PATH: process.env.RAG_VECTOR_STORE_PATH || "data/rag_vector_store.json",
   RAG_MIN_RELEVANCE_SCORE: process.env.RAG_MIN_RELEVANCE_SCORE || "0.65",
   RAG_TOP_K: process.env.RAG_TOP_K || "4",
 });

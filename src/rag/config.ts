@@ -19,7 +19,11 @@ export function getRAGConfig(): RAGConfig {
   const model = process.env.RAG_EMBEDDING_MODEL?.trim() || "gemini-embedding-001";
   const minScore = parseFloat(process.env.RAG_MIN_RELEVANCE_SCORE || "0.65");
   const topK = parseInt(process.env.RAG_TOP_K || "4", 10);
-  const vectorStorePath = process.env.RAG_VECTOR_STORE_PATH?.trim() || path.join(process.cwd(), "data", "rag_vector_store.json");
+  const vectorStorePath =
+    process.env.RAG_VECTOR_STORE_PATH?.trim() ||
+    (process.env.RAG_VECTOR_STORE && process.env.RAG_VECTOR_STORE.includes(".json")
+      ? process.env.RAG_VECTOR_STORE.trim()
+      : path.join(process.cwd(), "data", "rag_vector_store.json"));
   const knowledgeDir = process.env.RAG_KNOWLEDGE_DIR?.trim() || path.join(process.cwd(), "knowledge");
 
   return {
