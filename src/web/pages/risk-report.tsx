@@ -4,6 +4,7 @@ import NavBar from "../components/NavBar";
 import LoadingSpinner from "../components/LoadingSpinner";
 import ResultCard from "../components/ResultCard";
 import UnsupportedNotice from "../components/UnsupportedNotice";
+import GeminiExplanationCard from "../components/GeminiExplanationCard";
 import { useEffect, useState } from "react";
 import { decodeTransaction } from "../../solana/transactionDecoder";
 import { computeRiskScore, DEFAULT_RISK_CONFIG } from "../../solana/transactionRiskScore";
@@ -82,6 +83,10 @@ const RiskReport: NextPage = () => {
             ))}
           </ul>
         </ResultCard>
+
+        {/* Real Google Gemini AI Security Explanation */}
+        <GeminiExplanationCard base64Tx={demoBase64} />
+
         <ResultCard title="Simulation Data (Demo)">
           {simulation.error && <p className="text-red-600">Simulation error: {JSON.stringify(simulation.error)}</p>}
           {simulation.logs && (
