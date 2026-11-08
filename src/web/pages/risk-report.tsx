@@ -15,6 +15,7 @@ import generateExplanation from "../../gemini/explanation";
 import CpiCallTree from "../components/inspector/CpiCallTree";
 import AccountDiffMatrix from "../components/inspector/AccountDiffMatrix";
 import AuditReceiptExport from "../components/AuditReceiptExport";
+import GuardrailVerificationStrip from "../components/report/GuardrailVerificationStrip";
 import { sha256 } from "../utils/crypto";
 
 interface ReportState {
@@ -34,6 +35,7 @@ const RiskReport: NextPage = () => {
   const [sha256Hash, setSha256Hash] = useState<string>("");
   const [explanation, setExplanation] = useState<any>(null);
   const [citations, setCitations] = useState<any[]>([]);
+  const [simulateOutage, setSimulateOutage] = useState<boolean>(false);
 
   /** Demo fixture – use the same legacy transfer fixture as Overview */
   const demoBase64 = "AQABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"; // placeholder, replace with real fixture if needed
@@ -87,6 +89,33 @@ const RiskReport: NextPage = () => {
       <main className="max-w-4xl mx-auto p-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
           <h1 className="text-2xl font-bold">Risk Report (Demo Fixture)</h1>
+          {/* Judge Mode Outage Toggle */}
+          <button
+            type="button"
+            onClick={() => setSimulateOutage(!simulateOutage)}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 ${
+              simulateOutage
+                ? "bg-amber-100 text-amber-900 border-amber-400 shadow-xs"
+                : "bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200"
+            }`}
+            data-testid="simulate-outage-toggle"
+            title="Deliberately simulate a Gemini API outage/timeout to observe deterministic STRS + RAG fallback"
+          >
+            <span>{simulateOutage ? "⚡" : "🔌"}</span>
+            <span>{simulateOutage ? "LLM Outage Active (Deterministic-Only)" : "Simulate LLM Outage"}</span>
+          </button>
+        </div>
+
+        {/* Guardrail & Determinism Verification Status Strip */}
+        <div className="mb-4">
+          <GuardrailVerificationStrip
+            strsScoreLocked={true}
+            memoSanitized={true}
+            injectionDetected={false}
+            zodVerified={true}
+            readOnlySafe={true}
+            isOfflineMode={simulateOutage}
+          />
         </div>
 
         {/* Prominent Cryptographic SHA-256 Wire Payload Fingerprint */}
@@ -135,7 +164,11 @@ const RiskReport: NextPage = () => {
         </ResultCard>
 
         {/* Real Google Gemini AI Security Explanation */}
-        <GeminiExplanationCard base64Tx={demoBase64} />
+        <GeminiExplanationCard
+          base64Tx={demoBase64}
+          simulateOutage={simulateOutage}
+          onToggleOutage={(active) => setSimulateOutage(active)}
+        />
 
         <ResultCard title="Simulation Data (Demo)">
           {simulation.error && <p className="text-red-600">Simulation error: {JSON.stringify(simulation.error)}</p>}

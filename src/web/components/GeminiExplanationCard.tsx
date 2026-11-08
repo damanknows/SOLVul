@@ -6,18 +6,29 @@ interface GeminiExplanationCardProps {
   base64Tx?: string;
   inspection?: GeminiAnalysisInput;
   initialExplanation?: GeminiExplanation | null;
+  simulateOutage?: boolean;
+  onToggleOutage?: (active: boolean) => void;
 }
 
 export default function GeminiExplanationCard({
   base64Tx,
   inspection,
   initialExplanation = null,
+  simulateOutage = false,
+  onToggleOutage,
 }: GeminiExplanationCardProps) {
   const [explanation, setExplanation] = useState<GeminiExplanation | null>(initialExplanation);
+  const [outageMode, setOutageMode] = useState<boolean>(Boolean(simulateOutage));
   const [findingEvidence, setFindingEvidence] = useState<any[]>([]);
   const [ragSummary, setRagSummary] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(!initialExplanation);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (simulateOutage !== undefined) {
+      setOutageMode(simulateOutage);
+    }
+  }, [simulateOutage]);
 
   const fetchExplanation = async () => {
     if (!base64Tx && !inspection) return;
@@ -26,7 +37,11 @@ export default function GeminiExplanationCard({
     setError(null);
 
     try {
-      const payload = base64Tx ? { base64Tx } : { inspection };
+      const payload: any = base64Tx ? { base64Tx } : { inspection };
+      if (outageMode) {
+        payload.simulateOutage = true;
+      }
+
       const res = await fetch("/api/gemini/explain", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -62,7 +77,7 @@ export default function GeminiExplanationCard({
       fetchExplanation();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [base64Tx]);
+  }, [base64Tx, outageMode]);
 
   if (loading) {
     return (
@@ -116,8 +131,28 @@ export default function GeminiExplanationCard({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          {!explanation.isFallback ? (
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {/* Judge Mode Outage Toggle inside Card */}
+          <button
+            type="button"
+            onClick={() => {
+              const next = !outageMode;
+              setOutageMode(next);
+              if (onToggleOutage) onToggleOutage(next);
+            }}
+            className={`px-2.5 py-1 text-xs font-semibold rounded-full border transition-all flex items-center gap-1 ${
+              outageMode
+                ? "bg-amber-100 text-amber-900 border-amber-300"
+                : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200"
+            }`}
+            data-testid="toggle-outage-btn"
+            title="Deliberately simulate a Gemini API outage/timeout to test deterministic STRS + RAG fallback"
+          >
+            <span>{outageMode ? "⚡" : "🔌"}</span>
+            <span>{outageMode ? "LLM Outage Active" : "Simulate Outage"}</span>
+          </button>
+
+          {!explanation.isFallback && !outageMode ? (
             <span
               className="px-2.5 py-1 text-xs font-semibold bg-violet-100 text-violet-800 rounded-full border border-violet-200"
               data-testid="badge-ai-mode"

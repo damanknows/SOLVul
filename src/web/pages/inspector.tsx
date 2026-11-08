@@ -6,6 +6,7 @@ import ResultCard from "../components/ResultCard";
 import PreSigningFlow from "../components/PreSigningFlow";
 import AttackPlaygroundDrawer from "../components/AttackPlaygroundDrawer";
 import AttackPlaygroundQuickBar from "../components/AttackPlaygroundQuickBar";
+import GuardrailVerificationStrip from "../components/report/GuardrailVerificationStrip";
 import type { GeneratedFixture } from "../../lib/solana/fixtures/liveGenerator";
 import type { AttackFixture } from "../../lib/solana/fixtures/attackPlayground";
 import { useState, useEffect } from "react";
@@ -17,6 +18,7 @@ const Inspector: NextPage = () => {
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
   const [fixtureLabel, setFixtureLabel] = useState<string | null>(null);
   const [phantomPubkey, setPhantomPubkey] = useState<PublicKey | null>(null);
+  const [simulateOutage, setSimulateOutage] = useState<boolean>(false);
 
   // Detect Phantom wallet on mount
   useEffect(() => {
@@ -66,17 +68,48 @@ const Inspector: NextPage = () => {
           className="mb-6"
         />
 
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-2xl font-bold">Transaction Inspector</h1>
-          <button
-            type="button"
-            onClick={() => setDrawerOpen(true)}
-            className="px-4 py-2 bg-amber-500 text-white text-sm rounded-lg hover:bg-amber-600 transition-colors flex items-center gap-2"
-          >
-            <span>⚗️</span>
-            <span>Scenario Drawer</span>
-          </button>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Transaction Inspector</h1>
+            <p className="text-xs text-slate-500">
+              Pre-sign transaction firewall, deterministic STRS scoring & verifiable guardrails.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Judge Mode Outage Toggle */}
+            <button
+              type="button"
+              onClick={() => setSimulateOutage(!simulateOutage)}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 ${
+                simulateOutage
+                  ? "bg-amber-100 text-amber-900 border-amber-400 shadow-xs"
+                  : "bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200"
+              }`}
+              data-testid="simulate-outage-toggle"
+              title="Deliberately simulate a Gemini API outage/timeout to observe deterministic STRS + RAG fallback"
+            >
+              <span>{simulateOutage ? "⚡" : "🔌"}</span>
+              <span>{simulateOutage ? "LLM Outage Active (Deterministic-Only)" : "Simulate LLM Outage"}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setDrawerOpen(true)}
+              className="px-3 py-1.5 bg-amber-500 text-white text-xs font-semibold rounded-lg hover:bg-amber-600 transition-colors flex items-center gap-1.5"
+            >
+              <span>⚗️</span>
+              <span>Scenario Drawer</span>
+            </button>
+          </div>
         </div>
+
+        {/* Guardrail & Determinism Verification Status Strip */}
+        <GuardrailVerificationStrip
+          isOfflineMode={simulateOutage}
+          injectionDetected={Boolean(txInput && (txInput.includes("Ignore STRS") || txInput.includes("SYSTEM:")))}
+          className="mb-6"
+        />
 
         {!submitted ? (
           <form onSubmit={handleSubmit} className="space-y-4">

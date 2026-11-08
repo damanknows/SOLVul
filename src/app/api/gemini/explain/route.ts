@@ -4,7 +4,7 @@ import { decodeTransaction } from "../../../../solana/transactionDecoder";
 import { computeRiskScore } from "../../../../solana/transactionRiskScore";
 import { retrieve } from "../../../../rag/retriever";
 import { getSecurityEvidenceForTransaction } from "../../../../rag/service";
-import { generateSecurityExplanation } from "../../../../gemini/explanation";
+import { generateSecurityExplanation, createDeterministicFallback } from "../../../../gemini/explanation";
 import { GeminiAnalysisInputSchema } from "../../../../gemini/schemas";
 import type { GeminiAnalysisInput } from "../../../../gemini/types";
 
@@ -20,6 +20,8 @@ const ExplainRequestSchema = z.object({
   base64Tx: z.string().optional(),
   inspection: GeminiAnalysisInputSchema.optional(),
   network: z.string().optional().default("devnet"),
+  simulateOutage: z.boolean().optional().default(false),
+  deterministicOnly: z.boolean().optional().default(false),
 }).refine((data) => data.base64Tx || data.inspection, {
   message: "Either 'base64Tx' or 'inspection' must be provided",
 });
@@ -160,8 +162,14 @@ export async function POST(req: Request): Promise<Response> {
       );
     }
 
-    // 3. Generate Gemini Explanation (with automatic fallback on any error)
-    const explanation = await generateSecurityExplanation(analysisInput);
+    // 3. Generate Gemini Explanation (with automatic fallback on any error, or forced deterministic mode if simulated)
+    const isOutageSimulated = Boolean(parseResult.data.simulateOutage || parseResult.data.deterministicOnly);
+    const explanation = isOutageSimulated
+      ? createDeterministicFallback(
+          analysisInput,
+          "Simulated Gemini outage: deterministic-only mode activated by judge toggle.",
+        )
+      : await generateSecurityExplanation(analysisInput);
 
     return new Response(
       JSON.stringify({
