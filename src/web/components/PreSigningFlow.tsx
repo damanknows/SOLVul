@@ -39,6 +39,102 @@ export interface WalletProvider {
   request?: (args: { method: string; params?: any }) => Promise<any>;
 }
 
+export interface ExtractedSignersInfo {
+  requiredSigners: string[];
+  feePayer: string | null;
+  numRequiredSignatures: number;
+  version: "legacy" | "v0";
+}
+
+/**
+ * Extracts required signer public keys and expected fee payer from a Solana transaction.
+ * Supports legacy transactions, versioned transactions (v0), decoded transactions, or base64 wire strings.
+ */
+export function extractRequiredSigners(
+  tx: LegacyTx | VTx | DecodedTransaction | string,
+): ExtractedSignersInfo {
+  if (typeof tx === "string") {
+    const raw = Buffer.from(tx.trim(), "base64");
+    try {
+      const legacy = LegacyTx.from(raw);
+      return extractRequiredSigners(legacy);
+    } catch (_) {
+      try {
+        const vtx = VTx.deserialize(raw);
+        return extractRequiredSigners(vtx);
+      } catch (_) {
+        return {
+          requiredSigners: [],
+          feePayer: null,
+          numRequiredSignatures: 0,
+          version: "legacy",
+        };
+      }
+    }
+  }
+
+  if (tx instanceof LegacyTx) {
+    try {
+      const msg = tx.compileMessage();
+      const numReq = msg.header.numRequiredSignatures;
+      const requiredSigners = msg.accountKeys.slice(0, numReq).map((k) => k.toBase58());
+      const feePayer = tx.feePayer ? tx.feePayer.toBase58() : (requiredSigners[0] ?? null);
+      return {
+        requiredSigners,
+        feePayer,
+        numRequiredSignatures: numReq,
+        version: "legacy",
+      };
+    } catch (_) {
+      const signers: string[] = [];
+      if (tx.feePayer) signers.push(tx.feePayer.toBase58());
+      for (const sig of tx.signatures) {
+        if (sig.publicKey && !signers.includes(sig.publicKey.toBase58())) {
+          signers.push(sig.publicKey.toBase58());
+        }
+      }
+      return {
+        requiredSigners: signers,
+        feePayer: tx.feePayer?.toBase58() ?? (signers[0] ?? null),
+        numRequiredSignatures: signers.length,
+        version: "legacy",
+      };
+    }
+  }
+
+  if (tx instanceof VTx) {
+    const numReq = tx.message.header.numRequiredSignatures;
+    const requiredSigners = tx.message.staticAccountKeys.slice(0, numReq).map((k) => k.toBase58());
+    const feePayer = requiredSigners.length > 0 ? requiredSigners[0] : null;
+    return {
+      requiredSigners,
+      feePayer,
+      numRequiredSignatures: numReq,
+      version: "v0",
+    };
+  }
+
+  // DecodedTransaction
+  if ("message" in tx && tx.message) {
+    const numReq = tx.message.header?.numRequiredSignatures ?? 0;
+    const requiredSigners = tx.message.accountKeys.slice(0, numReq);
+    const feePayer = requiredSigners.length > 0 ? requiredSigners[0] : null;
+    return {
+      requiredSigners,
+      feePayer,
+      numRequiredSignatures: numReq,
+      version: tx.version ?? "legacy",
+    };
+  }
+
+  return {
+    requiredSigners: [],
+    feePayer: null,
+    numRequiredSignatures: 0,
+    version: "legacy",
+  };
+}
+
 /**
  * Props for the PreSigningFlow component.
  */
@@ -261,7 +357,7 @@ export default function PreSigningFlow({
     setState("rejected");
   };
 
-  // Handler for Approve — verifies cryptographic transaction binding and signs
+  // Handler for Approve — verifies cryptographic transaction binding, required signers, and signs
   const handleApprove = async () => {
     if (state !== "ready" || isSigningRef.current) {
       return;
@@ -285,11 +381,52 @@ export default function PreSigningFlow({
       try {
         txObj = LegacyTx.from(raw);
       } catch (_) {
-        txObj = VTx.deserialize(raw);
+        try {
+          txObj = VTx.deserialize(raw);
+        } catch (err: any) {
+          throw new Error(`Failed to deserialize transaction: ${err?.message || "Invalid payload"}`);
+        }
       }
 
-      // Cryptographic Transaction Binding Check:
-      // Re-serialize the transaction object and verify its SHA-256 matches inspectedHash bit-for-bit
+      // 1. Determine actual required signer keys and fee payer
+      const signersInfo = extractRequiredSigners(txObj);
+      if (signersInfo.numRequiredSignatures === 0 || signersInfo.requiredSigners.length === 0) {
+        throw new Error("Transaction specifies no required signers. Signing was blocked for safety.");
+      }
+
+      // 2. Check wallet availability and public key
+      const wallet = getWallet();
+      if (!wallet) {
+        throw new Error("No Solana wallet provider detected");
+      }
+      if (!wallet.publicKey) {
+        throw new Error("Connected wallet has no public key available");
+      }
+
+      const connectedWalletPubkey =
+        typeof wallet.publicKey.toBase58 === "function"
+          ? wallet.publicKey.toBase58()
+          : String(wallet.publicKey);
+
+      // 3. Verify connected wallet matches one of the required signers (do not assume first signer)
+      if (!signersInfo.requiredSigners.includes(connectedWalletPubkey)) {
+        const payerNotice = signersInfo.feePayer ? ` Expected fee payer: ${signersInfo.feePayer}.` : "";
+        throw new Error(
+          `Wallet Signer Mismatch: Connected wallet (${connectedWalletPubkey}) is not a required signer. Required signers: [${signersInfo.requiredSigners.join(", ")}].${payerNotice} Transaction signing was blocked for safety.`,
+        );
+      }
+
+      // 4. Cryptographic Transaction Binding & TOCTOU Pre-Signing Equality Checks:
+      // Check A: Wire bytes hash comparison
+      const currentRawHash = await sha256(raw);
+      if (currentRawHash !== inspectedHash) {
+        setIsTampered(true);
+        throw new Error(
+          `Payload Tampering Detected! Cryptographic transaction binding mismatch: Inspected hash (${inspectedHash}) does not match current raw wire hash (${currentRawHash}). Transaction was modified after inspection.`,
+        );
+      }
+
+      // Check B: Re-serialize the transaction object and verify its SHA-256 matches inspectedHash bit-for-bit
       let reSerialized: Uint8Array;
       if (txObj instanceof LegacyTx) {
         reSerialized = txObj.serialize({
@@ -308,16 +445,57 @@ export default function PreSigningFlow({
         );
       }
 
-      // Check wallet availability
-      const wallet = getWallet();
-      if (!wallet) {
-        throw new Error("No Solana wallet provider detected");
+      // Check C: Verify relevant transaction message properties against inspected decodedTx
+      if (decodedTx) {
+        let blockhash: string;
+        let accountKeysLength: number;
+        let instructionCount: number;
+        let numReqSignatures: number;
+
+        if (txObj instanceof LegacyTx) {
+          const msg = txObj.compileMessage();
+          blockhash = msg.recentBlockhash;
+          accountKeysLength = msg.accountKeys.length;
+          instructionCount = msg.instructions.length;
+          numReqSignatures = msg.header.numRequiredSignatures;
+        } else {
+          blockhash = txObj.message.recentBlockhash;
+          accountKeysLength = txObj.message.staticAccountKeys.length;
+          instructionCount = txObj.message.compiledInstructions.length;
+          numReqSignatures = txObj.message.header.numRequiredSignatures;
+        }
+
+        const inspectedInstructionCount =
+          decodedTx.instructions?.length ?? decodedTx.message.instructionCount;
+
+        if (
+          blockhash !== decodedTx.message.recentBlockhash ||
+          accountKeysLength !== decodedTx.message.accountKeys.length ||
+          instructionCount !== inspectedInstructionCount ||
+          (decodedTx.message.header && numReqSignatures !== decodedTx.message.header.numRequiredSignatures)
+        ) {
+          setIsTampered(true);
+          throw new Error(
+            "Payload Tampering Detected! Transaction message properties were altered after inspection.",
+          );
+        }
       }
 
-      // Request signature from wallet (single call, explicit user initiation)
+      // 5. Request signature from wallet (single call, explicit user initiation)
       const signedTx = await wallet.signTransaction(txObj);
 
-      // Serialize signed transaction
+      // 6. Verify signed transaction message integrity (wallet must not rewrite instructions)
+      if (signedTx instanceof LegacyTx && txObj instanceof LegacyTx) {
+        if (signedTx.compileMessage().instructions.length !== txObj.compileMessage().instructions.length) {
+          throw new Error("Signed transaction altered instruction count during wallet signing");
+        }
+      } else if (signedTx instanceof VTx && txObj instanceof VTx) {
+        if (signedTx.message.compiledInstructions.length !== txObj.message.compiledInstructions.length) {
+          throw new Error("Signed versioned transaction altered instruction count during wallet signing");
+        }
+      }
+
+      // 7. Serialize signed transaction
       let signedBytes: Uint8Array;
       if (signedTx instanceof LegacyTx) {
         signedBytes = signedTx.serialize({
@@ -403,6 +581,24 @@ export default function PreSigningFlow({
 
   const activeExplanation = geminiExplanation;
 
+  const activeWallet = getWallet();
+  const connectedPubkey = activeWallet?.publicKey
+    ? typeof activeWallet.publicKey.toBase58 === "function"
+      ? activeWallet.publicKey.toBase58()
+      : String(activeWallet.publicKey)
+    : null;
+
+  const signersInfo = decodedTx ? extractRequiredSigners(decodedTx) : null;
+  const isSignerMismatch = Boolean(
+    connectedPubkey &&
+      signersInfo &&
+      signersInfo.requiredSigners.length > 0 &&
+      !signersInfo.requiredSigners.includes(connectedPubkey),
+  );
+  const isMissingSigners = Boolean(
+    signersInfo && signersInfo.requiredSigners.length === 0,
+  );
+
   return (
     <div className="p-4 border rounded bg-white shadow-md max-w-2xl mx-auto" data-testid="presigning-flow">
       {/* Header with STRS Risk Level & Status Badges */}
@@ -453,6 +649,41 @@ export default function PreSigningFlow({
         </div>
       </div>
 
+      {/* Wallet Signer Mismatch Warning Banner */}
+      {isSignerMismatch && (
+        <div
+          className="mb-4 p-3 rounded-lg border border-red-300 bg-red-50 text-red-950 text-xs shadow-xs"
+          data-testid="wallet-signer-mismatch-warning"
+        >
+          <div className="flex items-center gap-1.5 font-bold text-red-800 mb-1 text-sm">
+            <span>⚠️</span>
+            <span>Wallet Signer Mismatch Detected</span>
+          </div>
+          <p className="mb-1 text-red-900 leading-relaxed">
+            Connected wallet (<code className="font-mono bg-red-100 px-1 py-0.5 rounded">{connectedPubkey}</code>) is <strong>not</strong> a required signer for this transaction.
+          </p>
+          <p className="text-red-800 text-[11px]">
+            Required Signers: [<span className="font-mono">{signersInfo?.requiredSigners.join(", ")}</span>]
+            {signersInfo?.feePayer && (
+              <span> · Expected Fee Payer: <code className="font-mono">{signersInfo.feePayer}</code></span>
+            )}
+          </p>
+          <p className="mt-1.5 font-semibold text-red-900">
+            Signing will be strictly blocked to protect your funds and prevent unauthorized transactions.
+          </p>
+        </div>
+      )}
+
+      {/* Missing Signers Warning Banner */}
+      {isMissingSigners && (
+        <div
+          className="mb-4 p-3 rounded-lg border border-amber-300 bg-amber-50 text-amber-950 text-xs shadow-xs"
+          data-testid="missing-signers-warning"
+        >
+          <span className="font-bold">⚠️ Warning:</span> This transaction specifies 0 required signers in its header. Signing cannot be performed.
+        </div>
+      )}
+
       {/* Cryptographic TOCTOU Fingerprint & Decoded Message Header Counts */}
       <div
         className="mb-4 p-3.5 bg-slate-900 text-slate-100 rounded-lg border border-slate-700 shadow-xs"
@@ -498,6 +729,107 @@ export default function PreSigningFlow({
               {decodedTx?.message.accountKeys.length ?? 0}
             </span>
           </div>
+        </div>
+      </div>
+
+      {/* On-Chain Simulation Status & Safety Semantics Panel */}
+      <div
+        className="mb-4 p-3.5 bg-slate-50 rounded-lg border border-slate-200 shadow-xs"
+        data-testid="simulation-status-panel"
+      >
+        <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 uppercase tracking-wider">
+            <span>🔬</span>
+            <span>On-Chain Simulation Semantics</span>
+          </div>
+          <div>
+            {!simulation ? (
+              <span
+                className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-slate-100 text-slate-700 border border-slate-300"
+                data-testid="simulation-status-badge"
+              >
+                Simulation Skipped
+              </span>
+            ) : simulation.status === "unavailable" ? (
+              <span
+                className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800 border border-amber-300"
+                data-testid="simulation-status-badge"
+              >
+                Simulation Unavailable
+              </span>
+            ) : simulation.status === "failed" ? (
+              <span
+                className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-rose-100 text-rose-800 border border-rose-300"
+                data-testid="simulation-status-badge"
+              >
+                Simulation Failed
+              </span>
+            ) : simulation.status === "success_with_warnings" || !simulation.hasFullAccountDiff ? (
+              <span
+                className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300"
+                data-testid="simulation-status-badge"
+              >
+                Simulation Result Incomplete
+              </span>
+            ) : (
+              <span
+                className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300"
+                data-testid="simulation-status-badge"
+              >
+                Simulation Succeeded
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="text-xs text-slate-700" data-testid="simulation-disclaimer">
+          {!simulation && (
+            <p className="text-slate-500 italic">
+              Simulation was skipped for this transaction. Deterministic STRS static inspection was evaluated without live RPC state.
+            </p>
+          )}
+
+          {simulation && simulation.status === "unavailable" && (
+            <div className="text-amber-800 bg-amber-50/70 p-2.5 rounded border border-amber-200">
+              <p className="font-semibold mb-0.5">Simulation Unavailable</p>
+              <p className="text-[11px] text-amber-700">
+                Simulation could not be executed because the RPC node is unreachable or offline. Static STRS inspection remains authoritative.
+              </p>
+            </div>
+          )}
+
+          {simulation && simulation.status === "failed" && (
+            <div className="text-rose-900 bg-rose-50/80 p-2.5 rounded border border-rose-200">
+              <p className="font-semibold mb-0.5">
+                Simulation Failed: {simulation.errorMessage || (simulation.error ? String(simulation.error) : "Instruction execution failed.")}
+              </p>
+              <p className="text-[11px] text-rose-700">
+                Note: Simulation failure does not necessarily indicate malicious intent. Common non-malicious causes include expired recent blockhashes, insufficient Devnet/mock SOL or token balances, or program condition checks.
+              </p>
+            </div>
+          )}
+
+          {simulation && (simulation.status === "success_with_warnings" || (!simulation.hasFullAccountDiff && simulation.status === "success")) && (
+            <div className="text-yellow-900 bg-yellow-50/80 p-2.5 rounded border border-yellow-200">
+              <p className="font-semibold mb-0.5">
+                Simulation Result Incomplete: Partial account state diffs returned.
+              </p>
+              <p className="text-[11px] text-yellow-800">
+                Not all account state mutations could be captured by the RPC snapshot.
+              </p>
+            </div>
+          )}
+
+          {simulation && simulation.status === "success" && simulation.hasFullAccountDiff && (
+            <div className="text-emerald-950 bg-emerald-50/80 p-2.5 rounded border border-emerald-200">
+              <p className="font-semibold mb-0.5">
+                Simulation Succeeded (0 runtime errors).
+              </p>
+              <p className="text-[11px] text-emerald-800 font-medium">
+                Critical Security Notice: Successful simulation is NOT proof of safety. A transaction may simulate successfully while executing unauthorized ownership reassignments, delegate approvals, or malicious state changes.
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -732,7 +1064,9 @@ export default function PreSigningFlow({
             className="p-3 bg-red-50 text-red-800 border border-red-200 rounded text-sm font-semibold text-center"
             data-testid="status-rejected"
           >
-            Transaction Rejected — Signing was not performed.
+            <div data-testid="rejected-notice">
+              Transaction Rejected — Signing was not performed.
+            </div>
           </div>
         )}
 

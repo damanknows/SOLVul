@@ -1,6 +1,7 @@
 // src/lib/audit/__tests__/auditReceipt.test.ts
 import {
   generateAuditReceipt,
+  verifyAuditReceipt,
   formatAuditReceiptMarkdown,
   downloadAuditReceipt,
   SecurityAuditReceipt,
@@ -9,7 +10,7 @@ import type { DecodedTransaction } from "../../../solana/transactionDecoder";
 import type { TransactionRiskAssessment } from "../../../solana/transactionRiskScore";
 
 describe("Security Audit Receipt Generator & Exporter", () => {
-  const dummyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const dummyHash = "142728538d5fecb49909ad32d3160c3cbd796335a6ccfa2b1d0f5c84646061a9";
   const dummyBase64 = "AQABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB";
 
   const dummyDecoded: DecodedTransaction = {
@@ -109,10 +110,10 @@ describe("Security Audit Receipt Generator & Exporter", () => {
     expect(receipt.strsRiskScore.triggeredRules[0].id).toBe("VS-02");
     expect(receipt.ragCitations).toHaveLength(1);
     expect(receipt.ragCitations[0].source).toBe("Solana Security Guide");
-    expect(receipt.cryptographicBinding.status).toBe("VERIFIED_AUTHENTIC");
+    expect(receipt.cryptographicBinding.status).toBe("VERIFIED");
   });
 
-  test("2. Flags TAMPERING_DETECTED when isTampered is true", () => {
+  test("2. Flags TAMPERED when isTampered is true", () => {
     const receipt = generateAuditReceipt({
       base64Tx: dummyBase64,
       sha256Hash: dummyHash,
@@ -120,7 +121,7 @@ describe("Security Audit Receipt Generator & Exporter", () => {
       isTampered: true,
     });
 
-    expect(receipt.cryptographicBinding.status).toBe("TAMPERING_DETECTED");
+    expect(receipt.cryptographicBinding.status).toBe("TAMPERED");
   });
 
   test("3. Formats audit receipt into valid GitHub Markdown with alert blocks and tables", () => {
@@ -184,5 +185,74 @@ describe("Security Audit Receipt Generator & Exporter", () => {
     expect(clickMock).toHaveBeenCalledTimes(2);
 
     jest.restoreAllMocks();
+  });
+
+  describe("verifyAuditReceipt Integrity Attestation", () => {
+    test("10. Audit receipt with missing verification yields UNVERIFIED", () => {
+      // Incomplete receipt missing sha256 or base64Payload
+      const incompleteReceipt = {
+        version: "1.0.0",
+        generator: "SOLVul Pre-Sign Firewall & Audit Engine",
+        timestamp: new Date().toISOString(),
+        payload: {
+          sha256: "",
+          version: "legacy",
+          wireBytesLength: 0,
+          base64Payload: "",
+          recentBlockhash: "11111111111111111111111111111111",
+          accountKeys: [],
+          instructionCount: 0,
+        },
+        strsRiskScore: { score: 0, riskLevel: "SAFE", dimensionBreakdown: {} as any, triggeredRules: [] },
+        ragCitations: [],
+        geminiExplanation: { summary: "None", risks: [], recommendations: [], findings: [] },
+        cryptographicBinding: {
+          algorithm: "SHA-256",
+          toctouProtection: "Bit-for-bit pre-sign serialization equality verified",
+          inspectedHash: "",
+          status: "UNVERIFIED" as any,
+        },
+      } as SecurityAuditReceipt;
+
+      const result = verifyAuditReceipt(incompleteReceipt);
+      expect(result.status).toBe("UNVERIFIED");
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toContain("Missing required cryptographic verification data");
+    });
+
+    test("11. Audit receipt with valid integrity check yields VERIFIED", () => {
+      const receipt = generateAuditReceipt({
+        base64Tx: dummyBase64,
+        sha256Hash: dummyHash,
+        decodedTx: dummyDecoded,
+        riskAssessment: dummyRisk,
+        explanation: dummyExplanation,
+      });
+
+      const result = verifyAuditReceipt(receipt);
+      expect(result.status).toBe("VERIFIED");
+      expect(result.isValid).toBe(true);
+      expect(result.computedHash).toBe(dummyHash);
+    });
+
+    test("12. Audit receipt with modified contents yields TAMPERED", () => {
+      const receipt = generateAuditReceipt({
+        base64Tx: dummyBase64,
+        sha256Hash: dummyHash,
+        decodedTx: dummyDecoded,
+        riskAssessment: dummyRisk,
+        explanation: dummyExplanation,
+      });
+
+      // Tamper with payload by mutating a byte in base64Payload
+      const tamperedBytes = Buffer.from(receipt.payload.base64Payload, "base64");
+      tamperedBytes[0] = (tamperedBytes[0] + 1) % 256;
+      receipt.payload.base64Payload = tamperedBytes.toString("base64");
+
+      const result = verifyAuditReceipt(receipt);
+      expect(result.status).toBe("TAMPERED");
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toContain("Cryptographic");
+    });
   });
 });

@@ -11,6 +11,14 @@ export interface AuditRagCitation {
   trustLevel?: string;
 }
 
+export type AuditIntegrityStatus =
+  | "VERIFIED"
+  | "UNVERIFIED"
+  | "TAMPERED"
+  | "VERIFICATION_FAILED"
+  | "VERIFIED_AUTHENTIC"
+  | "TAMPERING_DETECTED";
+
 export interface SecurityAuditReceipt {
   version: "1.0.0";
   generator: "SOLVul Pre-Sign Firewall & Audit Engine";
@@ -67,7 +75,7 @@ export interface SecurityAuditReceipt {
     algorithm: "SHA-256";
     toctouProtection: "Bit-for-bit pre-sign serialization equality verified";
     inspectedHash: string;
-    status: "VERIFIED_AUTHENTIC" | "TAMPERING_DETECTED";
+    status: AuditIntegrityStatus;
   };
 }
 
@@ -79,6 +87,107 @@ export interface GenerateReceiptParams {
   explanation?: Explanation | any | null;
   ragCitations?: AuditRagCitation[];
   isTampered?: boolean;
+  verificationStatus?: AuditIntegrityStatus;
+}
+
+export interface ReceiptVerificationResult {
+  status: AuditIntegrityStatus;
+  isValid: boolean;
+  reason: string;
+  computedHash?: string;
+}
+
+/**
+ * Recomputes and verifies the cryptographic binding and payload integrity of a SecurityAuditReceipt.
+ * 
+ * Requirements:
+ * - Missing verification data yields "UNVERIFIED"
+ * - Modified wire bytes or hash mismatch yields "TAMPERED"
+ * - Valid bit-for-bit match yields "VERIFIED"
+ * - Internal error yields "VERIFICATION_FAILED"
+ */
+export function verifyAuditReceipt(receipt: SecurityAuditReceipt): ReceiptVerificationResult {
+  if (!receipt || !receipt.payload || !receipt.cryptographicBinding) {
+    return {
+      status: "UNVERIFIED",
+      isValid: false,
+      reason: "Missing receipt payload or cryptographic binding metadata",
+    };
+  }
+
+  const { base64Payload, sha256: payloadHash, wireBytesLength } = receipt.payload;
+  const { inspectedHash } = receipt.cryptographicBinding;
+
+  if (!base64Payload || !payloadHash || !inspectedHash) {
+    return {
+      status: "UNVERIFIED",
+      isValid: false,
+      reason: "Missing required cryptographic verification data (base64Payload, sha256, or inspectedHash)",
+    };
+  }
+
+  try {
+    const rawBytes = Buffer.from(base64Payload.trim(), "base64");
+    if (rawBytes.length === 0) {
+      return {
+        status: "UNVERIFIED",
+        isValid: false,
+        reason: "Transaction payload is empty",
+      };
+    }
+
+    if (wireBytesLength !== undefined && rawBytes.length !== wireBytesLength) {
+      return {
+        status: "TAMPERED",
+        isValid: false,
+        reason: `Wire byte length mismatch: expected ${wireBytesLength} bytes, got ${rawBytes.length} bytes`,
+      };
+    }
+
+    // Compute SHA-256 over raw wire bytes
+    const crypto = require("crypto");
+    const computedHash: string = crypto.createHash("sha256").update(rawBytes).digest("hex");
+
+    if (payloadHash !== inspectedHash) {
+      return {
+        status: "TAMPERED",
+        isValid: false,
+        reason: `Cryptographic hash mismatch: payload sha256 (${payloadHash}) does not match inspectedHash (${inspectedHash})`,
+        computedHash,
+      };
+    }
+
+    if (computedHash !== payloadHash) {
+      return {
+        status: "TAMPERED",
+        isValid: false,
+        reason: `Cryptographic verification failed: recomputed hash (${computedHash}) does not match recorded sha256 (${payloadHash})`,
+        computedHash,
+      };
+    }
+
+    if (receipt.cryptographicBinding.status === "TAMPERED" || receipt.cryptographicBinding.status === "TAMPERING_DETECTED") {
+      return {
+        status: "TAMPERED",
+        isValid: false,
+        reason: "Receipt has been explicitly flagged as tampered",
+        computedHash,
+      };
+    }
+
+    return {
+      status: "VERIFIED",
+      isValid: true,
+      reason: "Cryptographic binding and payload integrity successfully verified bit-for-bit",
+      computedHash,
+    };
+  } catch (err: any) {
+    return {
+      status: "VERIFICATION_FAILED",
+      isValid: false,
+      reason: `Verification failed with internal error: ${err?.message || "Unknown error"}`,
+    };
+  }
 }
 
 /**
@@ -93,9 +202,10 @@ export function generateAuditReceipt(params: GenerateReceiptParams): SecurityAud
     explanation,
     ragCitations = [],
     isTampered = false,
+    verificationStatus,
   } = params;
 
-  const rawBytes = Buffer.from(base64Tx.trim(), "base64");
+  const rawBytes = Buffer.from(base64Tx ? base64Tx.trim() : "", "base64");
 
   // Derive dimension breakdown from findings if not explicitly stored
   const dimensionBreakdown = {
@@ -134,6 +244,26 @@ export function generateAuditReceipt(params: GenerateReceiptParams): SecurityAud
           snippet: e.snippet,
         }));
 
+  // Determine explicit verification state (never blindly defaults to VERIFIED_AUTHENTIC)
+  let status: AuditIntegrityStatus = "UNVERIFIED";
+  if (isTampered) {
+    status = "TAMPERED";
+  } else if (verificationStatus) {
+    status = verificationStatus;
+  } else if (base64Tx && sha256Hash) {
+    try {
+      const crypto = require("crypto");
+      const computed = crypto.createHash("sha256").update(rawBytes).digest("hex");
+      if (computed === sha256Hash) {
+        status = "VERIFIED";
+      } else {
+        status = "TAMPERED";
+      }
+    } catch (_) {
+      status = "UNVERIFIED";
+    }
+  }
+
   return {
     version: "1.0.0",
     generator: "SOLVul Pre-Sign Firewall & Audit Engine",
@@ -171,7 +301,7 @@ export function generateAuditReceipt(params: GenerateReceiptParams): SecurityAud
       algorithm: "SHA-256",
       toctouProtection: "Bit-for-bit pre-sign serialization equality verified",
       inspectedHash: sha256Hash,
-      status: isTampered ? "TAMPERING_DETECTED" : "VERIFIED_AUTHENTIC",
+      status: status,
     },
   };
 }
@@ -181,8 +311,13 @@ export function generateAuditReceipt(params: GenerateReceiptParams): SecurityAud
  */
 export function formatAuditReceiptMarkdown(receipt: SecurityAuditReceipt): string {
   const isSafe = receipt.strsRiskScore.riskLevel === "SAFE" || receipt.strsRiskScore.riskLevel === "LOW";
-  const alertType = receipt.cryptographicBinding.status === "TAMPERING_DETECTED"
+  const isTampered =
+    receipt.cryptographicBinding.status === "TAMPERED" ||
+    receipt.cryptographicBinding.status === "TAMPERING_DETECTED";
+  const alertType = isTampered
     ? "CAUTION"
+    : receipt.cryptographicBinding.status === "UNVERIFIED"
+    ? "WARNING"
     : isSafe
     ? "TIP"
     : "WARNING";
@@ -190,9 +325,11 @@ export function formatAuditReceiptMarkdown(receipt: SecurityAuditReceipt): strin
   let md = `# 🛡️ SOLVul Verifiable Transaction Security Audit Receipt\n\n`;
 
   md += `> [!${alertType}]\n`;
-  if (receipt.cryptographicBinding.status === "TAMPERING_DETECTED") {
+  if (isTampered) {
     md += `> **CRITICAL SECURITY ALERT: PAYLOAD TAMPERING DETECTED**\n`;
     md += `> The transaction wire bytes were modified after inspection. Signing was aborted to prevent loss of funds.\n\n`;
+  } else if (receipt.cryptographicBinding.status === "UNVERIFIED") {
+    md += `> **Pre-Sign Security Attestation (UNVERIFIED)**: Missing verification metadata. Cryptographic payload integrity has not been verified.\n\n`;
   } else {
     md += `> **Pre-Sign Security Attestation**: This receipt verifies the deterministic risk analysis, cryptographic payload hash, and RAG-grounded AI audit conducted prior to wallet authorization.\n\n`;
   }
