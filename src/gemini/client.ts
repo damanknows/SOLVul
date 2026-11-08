@@ -6,7 +6,7 @@ import { GeminiConfigError } from "./errors";
  * Default Gemini model if not specified in environment.
  * Configurable via GEMINI_MODEL env var without code changes.
  */
-export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
 /**
  * Retrieve the active Gemini model name from environment or fallback.

@@ -68,18 +68,41 @@ export const GeminiAnalysisInputSchema = z.object({
 });
 
 /**
+ * Standard Base64 regex pattern (canonical 4-character blocks with optional padding).
+ */
+export const BASE64_REGEX = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/**
+ * Validates that a string is non-empty, well-formed Base64, and can be correctly decoded.
+ */
+export function isValidBase64(str: unknown): boolean {
+  if (typeof str !== "string" || !str.trim()) return false;
+  const trimmed = str.trim();
+  if (trimmed.length % 4 !== 0) return false;
+  if (!BASE64_REGEX.test(trimmed)) return false;
+  try {
+    const buf = Buffer.from(trimmed, "base64");
+    if (buf.length === 0) return false;
+    return buf.toString("base64") === trimmed;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Strict Zod schema for validating Gemini model JSON output.
+ * Rejects unexpected properties injected by adversarial models or prompts.
  */
 export const CriticalFindingSchema = z.object({
   ruleId: z.string().min(1, "ruleId must not be empty"),
   explanation: z.string().min(1, "explanation must not be empty"),
   evidenceReferenceIds: z.array(z.string()).default([]),
-});
+}).strict();
 
 export const EvidenceReferenceSchema = z.object({
   documentId: z.string().min(1, "documentId must not be empty"),
   reason: z.string().min(1, "reason must not be empty"),
-});
+}).strict();
 
 export const GeminiExplanationSchema = z.object({
   transactionSummary: z.string().min(1, "transactionSummary must not be empty"),
@@ -91,4 +114,4 @@ export const GeminiExplanationSchema = z.object({
   simulationInterpretation: z.string().min(1, "simulationInterpretation must not be empty"),
   limitations: z.array(z.string()).default([]),
   evidenceReferences: z.array(EvidenceReferenceSchema).default([]),
-});
+}).strict();

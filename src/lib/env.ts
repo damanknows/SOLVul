@@ -16,7 +16,7 @@ export const envSchema = z.object({
   NEXT_PUBLIC_API_URL: z.string().url().default("http://localhost:3000"),
   SOLANA_RPC_ENDPOINT: z.string().url().default("https://api.devnet.solana.com"),
   GEMINI_API_KEY: z.string().optional(),
-  GEMINI_MODEL: z.string().default("gemini-3.5-flash"),
+  GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
   RAG_EMBEDDING_PROVIDER: z.string().default("google"),
   RAG_EMBEDDING_MODEL: z.string().default("gemini-embedding-001"),
   RAG_VECTOR_STORE: z.string().default("persistent-json"),
@@ -33,7 +33,7 @@ export const env: Env = envSchema.parse({
   NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000",
   SOLANA_RPC_ENDPOINT: process.env.SOLANA_RPC_ENDPOINT || "https://api.devnet.solana.com",
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
-  GEMINI_MODEL: process.env.GEMINI_MODEL || "gemini-3.5-flash",
+  GEMINI_MODEL: process.env.GEMINI_MODEL || "gemini-2.5-flash",
   RAG_EMBEDDING_PROVIDER: process.env.RAG_EMBEDDING_PROVIDER || "google",
   RAG_EMBEDDING_MODEL: process.env.RAG_EMBEDDING_MODEL || "gemini-embedding-001",
   RAG_VECTOR_STORE: process.env.RAG_VECTOR_STORE || "persistent-json",
@@ -54,6 +54,6 @@ export function validateServerGeminiConfig(): { apiKey: string; model: string } 
   }
   return {
     apiKey,
-    model: process.env.GEMINI_MODEL?.trim() || "gemini-3.5-flash",
+    model: process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash",
   };
 }

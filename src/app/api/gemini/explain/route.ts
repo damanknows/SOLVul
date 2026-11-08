@@ -1,20 +1,24 @@
 // src/app/api/gemini/explain/route.ts
+import crypto from "crypto";
 import { z } from "zod";
 import { decodeTransaction } from "../../../../solana/transactionDecoder";
 import { computeRiskScore } from "../../../../solana/transactionRiskScore";
-import { retrieve } from "../../../../rag/retriever";
 import { getSecurityEvidenceForTransaction } from "../../../../rag/service";
 import { generateSecurityExplanation, createDeterministicFallback } from "../../../../gemini/explanation";
-import { GeminiAnalysisInputSchema } from "../../../../gemini/schemas";
+import { GeminiAnalysisInputSchema, isValidBase64 } from "../../../../gemini/schemas";
+import { getGeminiModel } from "../../../../gemini/client";
 import type { GeminiAnalysisInput } from "../../../../gemini/types";
 
 /** Maximum allowable request body size in bytes (1 MB) */
 const MAX_REQUEST_SIZE_BYTES = 1024 * 1024;
 
+/** Maximum allowable decoded transaction wire bytes (64 KB) */
+const MAX_TX_WIRE_BYTES = 64 * 1024;
+
 /**
  * Incoming request schema.
- * Either `base64Tx` (preferred for authoritative server-side STRS)
- * or `inspection` (pre-computed inspection payload).
+ * Either `base64Tx` (authoritative transaction wire payload)
+ * or `inspection` (unverified client-supplied demo payload).
  */
 const ExplainRequestSchema = z.object({
   base64Tx: z.string().optional(),
@@ -28,7 +32,7 @@ const ExplainRequestSchema = z.object({
   network: z.string().optional().default("devnet"),
   simulateOutage: z.boolean().optional().default(false),
   deterministicOnly: z.boolean().optional().default(false),
-}).refine((data) => data.base64Tx || data.inspection, {
+}).refine((data) => data.base64Tx !== undefined || data.inspection !== undefined, {
   message: "Either 'base64Tx' or 'inspection' must be provided",
 });
 
@@ -36,15 +40,16 @@ const ExplainRequestSchema = z.object({
  * Route handler for POST /api/gemini/explain
  *
  * Enforces:
- * 1. Payload size limits (<= 1MB).
- * 2. Zod validation of request body.
+ * 1. Payload size limits (<= 1MB request body, <= 64KB transaction wire bytes).
+ * 2. Strict Base64 validation and cryptographic SHA-256 wire hash calculation.
  * 3. Authoritative STRS computation on the server if `base64Tx` is supplied,
- *    preventing client manipulation of deterministic risk scores.
- * 4. Error isolation without leaking internal stack traces or API keys.
+ *    preventing client manipulation of deterministic risk scores or findings.
+ * 4. Explicit marking of unverified demo payloads if `base64Tx` is absent.
+ * 5. Error isolation without leaking internal stack traces or API keys.
  */
 export async function POST(req: Request): Promise<Response> {
   try {
-    // 1. Enforce payload size limit
+    // 1. Enforce payload size limit (HTTP header and raw body check)
     const contentLength = req.headers.get("content-length");
     if (contentLength && parseInt(contentLength, 10) > MAX_REQUEST_SIZE_BYTES) {
       return new Response(
@@ -86,12 +91,67 @@ export async function POST(req: Request): Promise<Response> {
     const { base64Tx, inspection, simulation: simParam } = parseResult.data;
     let analysisInput: GeminiAnalysisInput;
     let ragResult: any = null;
+    let transactionHash: string;
+    let isUnverifiedDemo = false;
+    let authoritativeScore: number | null = null;
+    let authoritativeRiskLevel: string = "LOW";
+    let authoritativeFindings: any[] = [];
 
-    // 2. Authoritative STRS Evaluation
-    if (base64Tx && base64Tx.trim()) {
+    // 2. Authoritative STRS Evaluation via Serialized Transaction
+    if (base64Tx !== undefined) {
+      if (typeof base64Tx !== "string" || !base64Tx.trim()) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Empty transaction payload" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (!isValidBase64(base64Tx)) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Invalid or malformed Base64 transaction payload" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      const rawBytes = Buffer.from(base64Tx.trim(), "base64");
+      if (rawBytes.length === 0) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Empty transaction payload" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (rawBytes.length > MAX_TX_WIRE_BYTES) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `Transaction payload exceeds maximum allowable size (${MAX_TX_WIRE_BYTES / 1024}KB)`,
+          }),
+          { status: 413, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // Compute cryptographic SHA-256 hash over exact raw wire bytes
+      transactionHash = crypto.createHash("sha256").update(rawBytes).digest("hex").toLowerCase();
+
       // Decode and compute STRS authoritatively on the server
-      const decoded = await decodeTransaction(base64Tx);
+      let decoded;
+      try {
+        decoded = await decodeTransaction(base64Tx.trim());
+      } catch {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "Invalid transaction payload: unable to deserialize Solana transaction",
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
       const assessment = computeRiskScore(decoded);
+      authoritativeScore = assessment.score;
+      authoritativeRiskLevel = assessment.riskLevel;
+      authoritativeFindings = assessment.breakdown;
 
       // Retrieve evidence-backed security documentation tailored specifically to findings & simulation
       try {
@@ -106,7 +166,7 @@ export async function POST(req: Request): Promise<Response> {
       }
 
       analysisInput = {
-        transactionHash: base64Tx.slice(0, 32),
+        transactionHash,
         network: parseResult.data.network,
         riskScore: assessment.score,
         riskLevel: assessment.riskLevel,
@@ -150,7 +210,26 @@ export async function POST(req: Request): Promise<Response> {
         })),
       };
     } else if (inspection) {
-      analysisInput = inspection;
+      // Demo inspection input without authoritative transaction bytes: explicitly mark unverified
+      isUnverifiedDemo = true;
+      transactionHash = "unverified_demo_payload";
+      authoritativeScore = null;
+      authoritativeRiskLevel = "UNVERIFIED_DEMO";
+      authoritativeFindings = inspection.findings;
+
+      analysisInput = {
+        ...inspection,
+        transactionHash,
+        simulation: {
+          status: inspection.simulation?.status || "demo",
+          error: inspection.simulation?.error,
+          logs: inspection.simulation?.logs,
+          limitations: [
+            "UNVERIFIED DEMO DATA: Transaction payload was not cryptographically verified or decoded on-chain; inspection data is untrusted client-supplied input.",
+            ...(inspection.simulation?.limitations || []),
+          ],
+        },
+      };
     } else {
       return new Response(
         JSON.stringify({ success: false, error: "Missing inspection input" }),
@@ -170,11 +249,14 @@ export async function POST(req: Request): Promise<Response> {
     return new Response(
       JSON.stringify({
         success: true,
+        transactionHash,
+        isUnverifiedDemo,
+        isDemo: isUnverifiedDemo,
+        authoritativeScore,
+        authoritativeRiskLevel,
+        findings: authoritativeFindings,
         explanation,
         isFallback: explanation.isFallback,
-        authoritativeScore: analysisInput.riskScore,
-        authoritativeRiskLevel: analysisInput.riskLevel,
-        findings: analysisInput.findings,
         findingEvidence: (ragResult as any)?.evidence || [],
         ragSummary: (ragResult as any)?.summary || (analysisInput.retrievedEvidence.length > 0 ? "Evidence retrieved" : "No sufficiently relevant security documentation found."),
         ragStatus: {
@@ -183,9 +265,12 @@ export async function POST(req: Request): Promise<Response> {
         },
         geminiStatus: {
           available: !explanation.isFallback,
-          model: explanation.modelUsed || "gemini-2.5-flash",
+          model: explanation.modelUsed || getGeminiModel(),
           isFallback: Boolean(explanation.isFallback),
         },
+        ...(isUnverifiedDemo ? {
+          warning: "UNVERIFIED DEMO DATA: Transaction was not verified on-chain. Client-supplied risk scores and findings are unverified.",
+        } : {}),
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     );

@@ -175,7 +175,7 @@ export default function PreSigningFlow({
           // Graceful deterministic fallback: if Gemini API or network fails, generate fallback locally!
           fallbackActive = true;
           const analysisInput: GeminiAnalysisInput = {
-            transactionHash: base64Tx.slice(0, 32),
+            transactionHash: hash,
             network: "devnet",
             riskScore: assessment.score,
             riskLevel: assessment.riskLevel,

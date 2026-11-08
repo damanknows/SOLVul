@@ -251,6 +251,21 @@ The primary Inspector (`/inspector` and `PreSigningFlow.tsx`) seamlessly routes 
 5. **Generative Explanation**: `POST /api/gemini/explain` calls Google Gemini (`@google/genai`) with read-only STRS inputs and strict Zod validation (`GeminiExplanationSchema`).
 6. **Graceful Fallback**: If Gemini or network connectivity is unavailable, `createDeterministicFallback` instantly populates the report without UI crashes or score mutation.
 
+### Backend Transaction Verification & Gemini API Hardening (Phase 16.2)
+The backend explanation service (`POST /api/gemini/explain`) is hardened against client manipulation, malformed wire inputs, and adversarial prompt injections:
+1. **Authoritative Server-Side Evaluation**: The backend prefers serialized transaction bytes (`base64Tx`) as authoritative input. It re-decodes the transaction and recomputes STRS findings deterministically on the server, completely ignoring client-supplied risk scores or findings.
+2. **Cryptographic Wire SHA-256 Fingerprint**: Computes SHA-256 directly over decoded serialized binary bytes (`crypto.createHash('sha256').update(rawBytes).digest('hex')`), returning a verified lowercase hex `transactionHash`.
+3. **Strict Input & Wire Validation**:
+   - Validates canonical Base64 encoding structure (`BASE64_REGEX`) and rejects malformed or empty payloads with HTTP 400.
+   - Enforces transaction wire payload limits (maximum 64 KB decoded wire bytes) and request body size limits (maximum 1 MB) with HTTP 413.
+4. **Unverified Demo Data Isolation**: If pre-computed inspection data is provided without serialized wire bytes, it is explicitly flagged with `isUnverifiedDemo: true`, `isDemo: true`, `authoritativeScore: null`, and `authoritativeRiskLevel: "UNVERIFIED_DEMO"`, preventing unverified claims from being presented as verified inspections.
+5. **Strict Schema & Prompt-Injection Immunity**:
+   - `GeminiExplanationSchema.strict()`, `CriticalFindingSchema.strict()`, and `EvidenceReferenceSchema.strict()` reject unexpected injected properties (e.g., model attempts to output `riskScore`).
+   - Grounding validation filters out any hallucinated document IDs not present in retrieved RAG evidence.
+   - Deterministic preservation re-attaches high-severity STRS findings (severity $\ge 7$) if omitted by the generative model.
+6. **Safe Error Handling & Redaction**: All API keys (matching `AIza...`) are strictly redacted, and internal stack traces are never exposed in API responses.
+7. **Unified Model Standard**: Default model configuration is standardized to `gemini-2.5-flash` across client, environment schemas, and configuration templates.
+
 ---
 
 ## Interactive Visual Security Panels

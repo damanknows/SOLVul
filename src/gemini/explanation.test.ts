@@ -383,7 +383,7 @@ describe("Phase 7 — Google Gemini Security Explanation Engine", () => {
     async () => {
       const realResult = await generateSecurityExplanation(sampleInspectionInput, {
         apiKey: process.env.GEMINI_API_KEY,
-        model: process.env.GEMINI_MODEL || "gemini-3.5-flash",
+        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       });
 
       expect(realResult.transactionSummary.length).toBeGreaterThan(10);
