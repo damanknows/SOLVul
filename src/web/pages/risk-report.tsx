@@ -12,6 +12,8 @@ import { simulateTransaction } from "../../solana/simulateTransaction";
 import { Connection } from "@solana/web3.js";
 import { retrieve } from "../../rag/retriever";
 import generateExplanation from "../../gemini/explanation";
+import CpiCallTree from "../components/inspector/CpiCallTree";
+import AccountDiffMatrix from "../components/inspector/AccountDiffMatrix";
 
 interface ReportState {
   logs?: string[];
@@ -26,6 +28,7 @@ const RiskReport: NextPage = () => {
   const [decoded, setDecoded] = useState<any>(null);
   const [risk, setRisk] = useState<any>(null);
   const [simulation, setSimulation] = useState<ReportState>({});
+  const [fullSimulation, setFullSimulation] = useState<any>(null);
 
   /** Demo fixture – use the same legacy transfer fixture as Overview */
   const demoBase64 = "AQABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"; // placeholder, replace with real fixture if needed
@@ -41,6 +44,7 @@ const RiskReport: NextPage = () => {
         // Simulation (requires RPC connection)
         const conn = new Connection("https://api.devnet.solana.com");
         const simResult = await simulateTransaction(demoBase64, conn);
+        setFullSimulation(simResult);
         setSimulation({
           logs: simResult.logs,
           error: simResult.error,
@@ -95,6 +99,24 @@ const RiskReport: NextPage = () => {
           {simulation.computeUnits !== undefined && <p>Compute units consumed: {simulation.computeUnits}</p>}
           {simulation.evidenceCount !== undefined && <p>Returned account snapshots: {simulation.evidenceCount}</p>}
         </ResultCard>
+
+        {/* Visual Security Inspection Panels: Inner CPI Execution Tree */}
+        <div className="mb-4">
+          <CpiCallTree
+            decoded={decoded}
+            simulation={fullSimulation}
+            findings={risk?.breakdown ?? []}
+          />
+        </div>
+
+        {/* Visual Security Inspection Panels: Pre/Post Account State Diff Matrix */}
+        <div className="mb-4">
+          <AccountDiffMatrix
+            decoded={decoded}
+            simulation={fullSimulation}
+          />
+        </div>
+
         <ResultCard title="Recommendations">
           <p>Review high‑severity findings (VS‑01, VS‑05, VS‑06) and consider adjusting transaction parameters before signing.</p>
         </ResultCard>

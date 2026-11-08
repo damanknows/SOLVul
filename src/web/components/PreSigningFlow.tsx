@@ -31,6 +31,10 @@ export interface WalletProvider {
   request?: (args: { method: string; params?: any }) => Promise<any>;
 }
 
+import CpiCallTree from "./inspector/CpiCallTree";
+import AccountDiffMatrix from "./inspector/AccountDiffMatrix";
+import type { SimulationResult } from "../../solana/simulateTransaction";
+
 /**
  * Props for the PreSigningFlow component.
  */
@@ -38,6 +42,7 @@ export interface PreSigningFlowProps {
   base64Tx: string;
   onSigned?: (signedBase64: string) => void;
   walletProvider?: WalletProvider;
+  simulation?: SimulationResult | null;
 }
 
 /**
@@ -57,6 +62,7 @@ export default function PreSigningFlow({
   base64Tx,
   onSigned,
   walletProvider,
+  simulation,
 }: PreSigningFlowProps) {
   const [state, setState] = useState<PreSigningState>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -339,6 +345,23 @@ export default function PreSigningFlow({
           </ul>
         </section>
       )}
+
+      {/* Visual Security Inspection Panels: Inner CPI Execution Tree */}
+      <section className="mb-4">
+        <CpiCallTree
+          decoded={decodedTx}
+          simulation={simulation}
+          findings={riskAssessment?.breakdown ?? []}
+        />
+      </section>
+
+      {/* Visual Security Inspection Panels: Pre/Post Account State Diff Matrix */}
+      <section className="mb-4">
+        <AccountDiffMatrix
+          decoded={decodedTx}
+          simulation={simulation}
+        />
+      </section>
 
       {/* Decision / Action State */}
       <div className="pt-3 border-t mt-4">
