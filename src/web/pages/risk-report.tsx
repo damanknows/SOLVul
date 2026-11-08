@@ -15,8 +15,6 @@ import AccountDiffMatrix from "../components/inspector/AccountDiffMatrix";
 import AuditReceiptExport from "../components/AuditReceiptExport";
 import GuardrailVerificationStrip from "../components/report/GuardrailVerificationStrip";
 import { sha256 } from "../utils/crypto";
-import { retrieve } from "../../rag/retriever";
-import { generateExplanation } from "../../gemini/explanation";
 
 interface ReportState {
   logs?: string[];
