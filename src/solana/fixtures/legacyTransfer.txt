@@ -1,0 +1,5 @@
+// src/solana/fixtures/legacyTransfer.txt
+# Base64 of a simple unsigned SystemProgram transfer transaction (legacy format)
+# This is a placeholder; replace with a real base64 when generating real transactions.
+AQABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB
+
