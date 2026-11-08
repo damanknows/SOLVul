@@ -19,6 +19,12 @@ export type AuditIntegrityStatus =
   | "VERIFIED_AUTHENTIC"
   | "TAMPERING_DETECTED";
 
+export interface ReceiptDigestInfo {
+  algorithm: "SHA-256";
+  canonicalHash: string;
+  coveredFields: string[];
+}
+
 export interface SecurityAuditReceipt {
   version: "1.0.0";
   generator: "SOLVul Pre-Sign Firewall & Audit Engine";
@@ -77,6 +83,7 @@ export interface SecurityAuditReceipt {
     inspectedHash: string;
     status: AuditIntegrityStatus;
   };
+  receiptDigest?: ReceiptDigestInfo;
 }
 
 export interface GenerateReceiptParams {
@@ -95,16 +102,127 @@ export interface ReceiptVerificationResult {
   isValid: boolean;
   reason: string;
   computedHash?: string;
+  payloadIntegrity?: {
+    status: AuditIntegrityStatus;
+    computedHash: string;
+    matchesInspected: boolean;
+  };
+  receiptIntegrity?: {
+    status: AuditIntegrityStatus;
+    computedDigest?: string;
+    expectedDigest?: string;
+    reason?: string;
+  };
 }
 
 /**
- * Recomputes and verifies the cryptographic binding and payload integrity of a SecurityAuditReceipt.
- * 
+ * Validates canonical Base64 encoding.
+ * Rejects invalid characters, incorrect padding, empty payloads,
+ * noncanonical encodings, and byte length mismatches.
+ */
+export function validateCanonicalBase64(
+  str: unknown,
+  expectedByteLength?: number,
+): { isValid: boolean; error?: string; bytes?: Buffer } {
+  if (typeof str !== "string" || !str.trim()) {
+    return { isValid: false, error: "Base64 transaction payload is empty or not a string" };
+  }
+  const trimmed = str.trim();
+  if (trimmed.length % 4 !== 0) {
+    return { isValid: false, error: "Base64 payload length is not a multiple of 4 (incorrect padding)" };
+  }
+  const CANONICAL_B64_REGEX = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+  if (!CANONICAL_B64_REGEX.test(trimmed)) {
+    return { isValid: false, error: "Base64 payload contains invalid characters or improper padding sequence" };
+  }
+  try {
+    const buf = Buffer.from(trimmed, "base64");
+    if (buf.length === 0) {
+      return { isValid: false, error: "Decoded payload is 0 bytes" };
+    }
+    if (buf.toString("base64") !== trimmed) {
+      return { isValid: false, error: "Noncanonical Base64 encoding detected" };
+    }
+    if (expectedByteLength !== undefined && buf.length !== expectedByteLength) {
+      return {
+        isValid: false,
+        error: `Decoded byte length mismatch: expected ${expectedByteLength} bytes, got ${buf.length} bytes`,
+      };
+    }
+    return { isValid: true, bytes: buf };
+  } catch (err: any) {
+    return { isValid: false, error: `Base64 decoding failed: ${err?.message || "Invalid payload"}` };
+  }
+}
+
+/**
+ * Recursively sorts object keys for deterministic canonical JSON serialization.
+ */
+export function canonicalizeValue(val: any): any {
+  if (val === null || val === undefined) return null;
+  if (Array.isArray(val)) {
+    return val.map(canonicalizeValue);
+  }
+  if (typeof val === "object") {
+    const sortedKeys = Object.keys(val).sort();
+    const result: Record<string, any> = {};
+    for (const key of sortedKeys) {
+      result[key] = canonicalizeValue(val[key]);
+    }
+    return result;
+  }
+  return val;
+}
+
+/**
+ * Computes canonical SHA-256 digest covering all security-relevant fields of an audit receipt:
+ * - Transaction wire hash and payload
+ * - STRS score, risk level, dimension breakdown, and findings
+ * - RAG citations and provenance
+ * - Gemini explanation summary, risks, recommendations, and findings
+ * - Verification metadata (algorithm, inspectedHash, status, toctouProtection)
+ */
+export function computeReceiptDigest(receipt: {
+  payload: { sha256: string; base64Payload: string };
+  strsRiskScore: { score: number; riskLevel: string; dimensionBreakdown: any; triggeredRules: any[] };
+  ragCitations: any[];
+  geminiExplanation: any;
+  cryptographicBinding: { inspectedHash: string; algorithm: string; status: string; toctouProtection: string };
+}): string {
+  const coveredData = {
+    transactionHash: receipt.payload?.sha256 ?? "",
+    base64Payload: receipt.payload?.base64Payload ?? "",
+    strsScore: receipt.strsRiskScore?.score ?? 0,
+    strsRiskLevel: receipt.strsRiskScore?.riskLevel ?? "",
+    strsDimensionBreakdown: receipt.strsRiskScore?.dimensionBreakdown ?? {},
+    strsFindings: receipt.strsRiskScore?.triggeredRules ?? [],
+    ragCitations: receipt.ragCitations ?? [],
+    geminiExplanation: receipt.geminiExplanation ?? {},
+    verificationMetadata: {
+      algorithm: receipt.cryptographicBinding?.algorithm ?? "SHA-256",
+      inspectedHash: receipt.cryptographicBinding?.inspectedHash ?? "",
+      status: receipt.cryptographicBinding?.status ?? "UNVERIFIED",
+      toctouProtection: receipt.cryptographicBinding?.toctouProtection ?? "",
+    },
+  };
+  const canonicalObj = canonicalizeValue(coveredData);
+  const jsonString = JSON.stringify(canonicalObj);
+  const crypto = require("crypto");
+  return crypto.createHash("sha256").update(jsonString).digest("hex");
+}
+
+/**
+ * Recomputes and verifies both:
+ * 1. Transaction wire payload integrity (SHA-256 wire hash).
+ * 2. Receipt metadata integrity (canonical receipt digest covering STRS, findings, RAG citations, and explanation).
+ *
  * Requirements:
  * - Missing verification data yields "UNVERIFIED"
- * - Modified wire bytes or hash mismatch yields "TAMPERED"
- * - Valid bit-for-bit match yields "VERIFIED"
- * - Internal error yields "VERIFICATION_FAILED"
+ * - Invalid/noncanonical Base64 yields "VERIFICATION_FAILED"
+ * - Wire hash mismatch yields "TAMPERED"
+ * - Missing receipt digest yields "UNVERIFIED" (wire hash does not authenticate entire receipt)
+ * - Receipt metadata mismatch yields "TAMPERED"
+ * - Both wire and receipt digest match yields "VERIFIED"
  */
 export function verifyAuditReceipt(receipt: SecurityAuditReceipt): ReceiptVerificationResult {
   if (!receipt || !receipt.payload || !receipt.cryptographicBinding) {
@@ -127,24 +245,20 @@ export function verifyAuditReceipt(receipt: SecurityAuditReceipt): ReceiptVerifi
   }
 
   try {
-    const rawBytes = Buffer.from(base64Payload.trim(), "base64");
-    if (rawBytes.length === 0) {
+    // 1. Strict canonical Base64 validation
+    const b64Check = validateCanonicalBase64(base64Payload, wireBytesLength);
+    if (!b64Check.isValid) {
+      const isLengthMismatch = b64Check.error?.includes("length mismatch");
       return {
-        status: "UNVERIFIED",
+        status: isLengthMismatch ? "TAMPERED" : "VERIFICATION_FAILED",
         isValid: false,
-        reason: "Transaction payload is empty",
+        reason: `Base64 wire payload validation failed: ${b64Check.error}`,
       };
     }
 
-    if (wireBytesLength !== undefined && rawBytes.length !== wireBytesLength) {
-      return {
-        status: "TAMPERED",
-        isValid: false,
-        reason: `Wire byte length mismatch: expected ${wireBytesLength} bytes, got ${rawBytes.length} bytes`,
-      };
-    }
+    const rawBytes = b64Check.bytes!;
 
-    // Compute SHA-256 over raw wire bytes
+    // 2. Compute SHA-256 over raw wire bytes
     const crypto = require("crypto");
     const computedHash: string = crypto.createHash("sha256").update(rawBytes).digest("hex");
 
@@ -154,6 +268,11 @@ export function verifyAuditReceipt(receipt: SecurityAuditReceipt): ReceiptVerifi
         isValid: false,
         reason: `Cryptographic hash mismatch: payload sha256 (${payloadHash}) does not match inspectedHash (${inspectedHash})`,
         computedHash,
+        payloadIntegrity: {
+          status: "TAMPERED",
+          computedHash,
+          matchesInspected: false,
+        },
       };
     }
 
@@ -163,6 +282,11 @@ export function verifyAuditReceipt(receipt: SecurityAuditReceipt): ReceiptVerifi
         isValid: false,
         reason: `Cryptographic verification failed: recomputed hash (${computedHash}) does not match recorded sha256 (${payloadHash})`,
         computedHash,
+        payloadIntegrity: {
+          status: "TAMPERED",
+          computedHash,
+          matchesInspected: false,
+        },
       };
     }
 
@@ -172,14 +296,69 @@ export function verifyAuditReceipt(receipt: SecurityAuditReceipt): ReceiptVerifi
         isValid: false,
         reason: "Receipt has been explicitly flagged as tampered",
         computedHash,
+        payloadIntegrity: {
+          status: "TAMPERED",
+          computedHash,
+          matchesInspected: true,
+        },
+      };
+    }
+
+    // 3. Receipt Metadata Integrity Check
+    // If the receipt has no valid digest, mark it UNVERIFIED (do not claim wire hash authenticates entire receipt)
+    if (!receipt.receiptDigest || !receipt.receiptDigest.canonicalHash || typeof receipt.receiptDigest.canonicalHash !== "string") {
+      return {
+        status: "UNVERIFIED",
+        isValid: false,
+        reason: "Receipt metadata has no valid cryptographic digest. Transaction wire hash alone does not authenticate receipt metadata.",
+        computedHash,
+        payloadIntegrity: {
+          status: "VERIFIED",
+          computedHash,
+          matchesInspected: true,
+        },
+        receiptIntegrity: {
+          status: "UNVERIFIED",
+          reason: "Missing receiptDigest",
+        },
+      };
+    }
+
+    const recomputedDigest = computeReceiptDigest(receipt);
+    if (recomputedDigest !== receipt.receiptDigest.canonicalHash) {
+      return {
+        status: "TAMPERED",
+        isValid: false,
+        reason: "Receipt metadata tampering detected: Recomputed canonical digest does not match recorded receiptDigest (STRS score/findings, RAG citations, or Gemini explanation was modified).",
+        computedHash,
+        payloadIntegrity: {
+          status: "VERIFIED",
+          computedHash,
+          matchesInspected: true,
+        },
+        receiptIntegrity: {
+          status: "TAMPERED",
+          computedDigest: recomputedDigest,
+          expectedDigest: receipt.receiptDigest.canonicalHash,
+        },
       };
     }
 
     return {
       status: "VERIFIED",
       isValid: true,
-      reason: "Cryptographic binding and payload integrity successfully verified bit-for-bit",
+      reason: "Transaction wire payload and receipt metadata integrity both verified bit-for-bit",
       computedHash,
+      payloadIntegrity: {
+        status: "VERIFIED",
+        computedHash,
+        matchesInspected: true,
+      },
+      receiptIntegrity: {
+        status: "VERIFIED",
+        computedDigest: recomputedDigest,
+        expectedDigest: receipt.receiptDigest.canonicalHash,
+      },
     };
   } catch (err: any) {
     return {
@@ -206,6 +385,7 @@ export function generateAuditReceipt(params: GenerateReceiptParams): SecurityAud
   } = params;
 
   const rawBytes = Buffer.from(base64Tx ? base64Tx.trim() : "", "base64");
+  const normalizedBase64 = rawBytes.length > 0 ? rawBytes.toString("base64") : (base64Tx ? base64Tx.trim() : "");
 
   // Derive dimension breakdown from findings if not explicitly stored
   const dimensionBreakdown = {
@@ -259,12 +439,12 @@ export function generateAuditReceipt(params: GenerateReceiptParams): SecurityAud
       } else {
         status = "TAMPERED";
       }
-    } catch (_) {
+    } catch {
       status = "UNVERIFIED";
     }
   }
 
-  return {
+  const receipt: SecurityAuditReceipt = {
     version: "1.0.0",
     generator: "SOLVul Pre-Sign Firewall & Audit Engine",
     timestamp: new Date().toISOString(),
@@ -272,7 +452,7 @@ export function generateAuditReceipt(params: GenerateReceiptParams): SecurityAud
       sha256: sha256Hash,
       version: decodedTx?.version ?? (base64Tx.startsWith("AQ") ? "v0" : "legacy"),
       wireBytesLength: rawBytes.length,
-      base64Payload: base64Tx.trim(),
+      base64Payload: normalizedBase64,
       recentBlockhash: decodedTx?.message.recentBlockhash ?? "unknown",
       accountKeys: decodedTx?.message.accountKeys ?? [],
       instructionCount: decodedTx?.instructions?.length ?? decodedTx?.message.instructionCount ?? 0,
@@ -304,6 +484,27 @@ export function generateAuditReceipt(params: GenerateReceiptParams): SecurityAud
       status: status,
     },
   };
+
+  if (status !== "TAMPERED" && rawBytes.length > 0) {
+    const canonicalHash = computeReceiptDigest(receipt);
+    receipt.receiptDigest = {
+      algorithm: "SHA-256",
+      canonicalHash,
+      coveredFields: [
+        "payload.sha256",
+        "payload.base64Payload",
+        "strsRiskScore.score",
+        "strsRiskScore.riskLevel",
+        "strsRiskScore.dimensionBreakdown",
+        "strsRiskScore.triggeredRules",
+        "ragCitations",
+        "geminiExplanation",
+        "cryptographicBinding",
+      ],
+    };
+  }
+
+  return receipt;
 }
 
 /**
@@ -338,6 +539,9 @@ export function formatAuditReceiptMarkdown(receipt: SecurityAuditReceipt): strin
   md += `| Field | Value |\n`;
   md += `| :--- | :--- |\n`;
   md += `| **Payload SHA-256 Fingerprint** | \`${receipt.payload.sha256}\` |\n`;
+  if (receipt.receiptDigest) {
+    md += `| **Receipt Canonical Digest** | \`${receipt.receiptDigest.canonicalHash}\` |\n`;
+  }
   md += `| **Timestamp (UTC)** | \`${receipt.timestamp}\` |\n`;
   md += `| **Transaction Wire Version** | \`${receipt.payload.version.toUpperCase()}\` |\n`;
   md += `| **Wire Payload Size** | ${receipt.payload.wireBytesLength} bytes |\n`;

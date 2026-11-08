@@ -64,10 +64,19 @@ export interface DecodedTransaction {
       numReadonlySignedAccounts: number;
       numReadonlyUnsignedAccounts: number;
     };
+    addressTableLookups?: Array<{
+      accountKey: string | { toBase58(): string };
+      writableIndexes: number[] | Uint8Array;
+      readonlyIndexes: number[] | Uint8Array;
+    }>;
   };
   instructions: DecodedInstruction[];
   warnings?: string[];
   unresolvedLookupTables?: UnresolvedLookupTable[];
+  loadedAddresses?: {
+    writable?: string[];
+    readonly?: string[];
+  };
 }
 
 /**
@@ -686,8 +695,13 @@ export async function decodeTransaction(
             numReadonlyUnsignedAccounts: messageV0.header.numReadonlyUnsignedAccounts,
           }
         : undefined,
+      addressTableLookups: messageV0.addressTableLookups,
     },
     instructions: decodedInstructions,
+    loadedAddresses: {
+      writable: loadedWritable.map((k) => k.toBase58()),
+      readonly: loadedReadonly.map((k) => k.toBase58()),
+    },
     ...(warnings.length > 0 ? { warnings } : {}),
     ...(unresolvedLookupTables.length > 0 ? { unresolvedLookupTables } : {}),
   };

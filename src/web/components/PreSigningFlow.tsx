@@ -136,6 +136,153 @@ export function extractRequiredSigners(
 }
 
 /**
+ * Normalizes and verifies that transaction message properties match the inspected decoded transaction.
+ * Handles legacy transactions, v0 transactions without ALTs, and v0 transactions with resolved ALTs
+ * (loaded writable and loaded readonly accounts) without false mismatch alerts.
+ */
+export function verifyTransactionMessageProperties(
+  txObj: LegacyTx | VTx,
+  decodedTx: DecodedTransaction,
+): { isValid: boolean; error?: string } {
+  if (!decodedTx || !decodedTx.message) {
+    return { isValid: true };
+  }
+
+  const inspectedInstructionCount =
+    decodedTx.instructions && decodedTx.instructions.length > 0
+      ? decodedTx.instructions.length
+      : (decodedTx.message.instructionCount ?? 0);
+
+  if (txObj instanceof LegacyTx) {
+    const msg = txObj.compileMessage();
+    if (msg.recentBlockhash !== decodedTx.message.recentBlockhash) {
+      return { isValid: false, error: "Blockhash mismatch in legacy transaction" };
+    }
+    if (msg.accountKeys.length !== decodedTx.message.accountKeys.length) {
+      return { isValid: false, error: "Account keys count mismatch in legacy transaction" };
+    }
+    if (msg.instructions.length !== inspectedInstructionCount) {
+      return { isValid: false, error: "Instruction count mismatch in legacy transaction" };
+    }
+    if (
+      decodedTx.message.header &&
+      msg.header.numRequiredSignatures !== decodedTx.message.header.numRequiredSignatures
+    ) {
+      return { isValid: false, error: "Required signatures count mismatch in legacy transaction" };
+    }
+    return { isValid: true };
+  }
+
+  // VersionedTransaction (v0)
+  if (txObj.message.recentBlockhash !== decodedTx.message.recentBlockhash) {
+    return { isValid: false, error: "Blockhash mismatch in versioned transaction" };
+  }
+
+  if (
+    decodedTx.message.header &&
+    txObj.message.header.numRequiredSignatures !== decodedTx.message.header.numRequiredSignatures
+  ) {
+    return { isValid: false, error: "Required signatures count mismatch in versioned transaction" };
+  }
+
+  if (txObj.message.compiledInstructions.length !== inspectedInstructionCount) {
+    return { isValid: false, error: "Compiled instruction count mismatch in versioned transaction" };
+  }
+
+  // Normalize static account keys
+  const staticKeys = txObj.message.staticAccountKeys.map((k) => k.toBase58());
+  const inspectedStaticKeys = decodedTx.message.accountKeys.slice(0, staticKeys.length);
+  if (staticKeys.length !== inspectedStaticKeys.length) {
+    return { isValid: false, error: "Static account keys count mismatch in versioned transaction" };
+  }
+  for (let i = 0; i < staticKeys.length; i++) {
+    if (staticKeys[i] !== inspectedStaticKeys[i]) {
+      return { isValid: false, error: `Static account key mismatch at index ${i}` };
+    }
+  }
+
+  // Normalize Address Lookup Tables (ALTs)
+  const txAlts = txObj.message.addressTableLookups || [];
+  const inspectedAlts = decodedTx.message.addressTableLookups || [];
+  if (txAlts.length !== inspectedAlts.length) {
+    return {
+      isValid: false,
+      error: `Address lookup table count mismatch: expected ${inspectedAlts.length}, got ${txAlts.length}`,
+    };
+  }
+  for (let idx = 0; idx < txAlts.length; idx++) {
+    const lookup = txAlts[idx];
+    const insp = inspectedAlts[idx];
+    if (!insp) return { isValid: false, error: `Missing expected ALT lookup at index ${idx}` };
+    const lookupKey = lookup.accountKey.toBase58();
+    const inspKey = typeof insp.accountKey === "string" ? insp.accountKey : insp.accountKey?.toBase58?.();
+    if (lookupKey !== inspKey) {
+      return { isValid: false, error: `ALT table key mismatch at index ${idx}` };
+    }
+    const wMatch =
+      JSON.stringify(Array.from(lookup.writableIndexes)) === JSON.stringify(Array.from(insp.writableIndexes));
+    const rMatch =
+      JSON.stringify(Array.from(lookup.readonlyIndexes)) === JSON.stringify(Array.from(insp.readonlyIndexes));
+    if (!wMatch || !rMatch) {
+      return { isValid: false, error: `ALT indexes mismatch at index ${idx}` };
+    }
+  }
+
+  // Loaded addresses normalization:
+  // In decodedTx, accountKeys may include loaded writable and loaded readonly accounts
+  const loadedCount =
+    (decodedTx.loadedAddresses?.writable?.length ?? 0) + (decodedTx.loadedAddresses?.readonly?.length ?? 0);
+  const expectedTotalAccounts = staticKeys.length + loadedCount;
+  if (
+    decodedTx.message.accountKeys.length !== staticKeys.length &&
+    decodedTx.message.accountKeys.length !== expectedTotalAccounts
+  ) {
+    return {
+      isValid: false,
+      error: `Resolved account keys length (${decodedTx.message.accountKeys.length}) does not match expected static (${staticKeys.length}) or resolved total (${expectedTotalAccounts})`,
+    };
+  }
+
+  return { isValid: true };
+}
+
+/**
+ * Verifies that the signed transaction's message bytes match the pre-signing message bytes bit-for-bit.
+ * Excludes signature bytes, guaranteeing that accounts, instructions, data, program IDs, ALTs,
+ * and blockhash were not altered by the wallet during signing.
+ */
+export function verifyPostSigningMessageIntegrity(
+  preSignTx: LegacyTx | VTx,
+  postSignTx: LegacyTx | VTx,
+): { isValid: boolean; error?: string } {
+  try {
+    const preBytes =
+      preSignTx instanceof LegacyTx
+        ? preSignTx.compileMessage().serialize()
+        : preSignTx.message.serialize();
+
+    let postBytes: Uint8Array;
+    if (postSignTx instanceof LegacyTx) {
+      postBytes = postSignTx.compileMessage().serialize();
+    } else if (postSignTx instanceof VTx) {
+      postBytes = postSignTx.message.serialize();
+    } else {
+      return { isValid: false, error: "Unrecognized post-signing transaction type" };
+    }
+
+    if (Buffer.compare(Buffer.from(preBytes), Buffer.from(postBytes)) !== 0) {
+      return {
+        isValid: false,
+        error: "Post-signing message byte mismatch: transaction message was modified during wallet signing",
+      };
+    }
+    return { isValid: true };
+  } catch (err: any) {
+    return { isValid: false, error: err?.message || "Failed to compare message bytes" };
+  }
+}
+
+/**
  * Props for the PreSigningFlow component.
  */
 export interface PreSigningFlowProps {
@@ -445,38 +592,13 @@ export default function PreSigningFlow({
         );
       }
 
-      // Check C: Verify relevant transaction message properties against inspected decodedTx
+      // Check C: Verify relevant transaction message properties against inspected decodedTx with ALT normalization
       if (decodedTx) {
-        let blockhash: string;
-        let accountKeysLength: number;
-        let instructionCount: number;
-        let numReqSignatures: number;
-
-        if (txObj instanceof LegacyTx) {
-          const msg = txObj.compileMessage();
-          blockhash = msg.recentBlockhash;
-          accountKeysLength = msg.accountKeys.length;
-          instructionCount = msg.instructions.length;
-          numReqSignatures = msg.header.numRequiredSignatures;
-        } else {
-          blockhash = txObj.message.recentBlockhash;
-          accountKeysLength = txObj.message.staticAccountKeys.length;
-          instructionCount = txObj.message.compiledInstructions.length;
-          numReqSignatures = txObj.message.header.numRequiredSignatures;
-        }
-
-        const inspectedInstructionCount =
-          decodedTx.instructions?.length ?? decodedTx.message.instructionCount;
-
-        if (
-          blockhash !== decodedTx.message.recentBlockhash ||
-          accountKeysLength !== decodedTx.message.accountKeys.length ||
-          instructionCount !== inspectedInstructionCount ||
-          (decodedTx.message.header && numReqSignatures !== decodedTx.message.header.numRequiredSignatures)
-        ) {
+        const propCheck = verifyTransactionMessageProperties(txObj, decodedTx);
+        if (!propCheck.isValid) {
           setIsTampered(true);
           throw new Error(
-            "Payload Tampering Detected! Transaction message properties were altered after inspection.",
+            `Payload Tampering Detected! ${propCheck.error || "Transaction message properties were altered after inspection."}`,
           );
         }
       }
@@ -484,15 +606,15 @@ export default function PreSigningFlow({
       // 5. Request signature from wallet (single call, explicit user initiation)
       const signedTx = await wallet.signTransaction(txObj);
 
-      // 6. Verify signed transaction message integrity (wallet must not rewrite instructions)
-      if (signedTx instanceof LegacyTx && txObj instanceof LegacyTx) {
-        if (signedTx.compileMessage().instructions.length !== txObj.compileMessage().instructions.length) {
-          throw new Error("Signed transaction altered instruction count during wallet signing");
-        }
-      } else if (signedTx instanceof VTx && txObj instanceof VTx) {
-        if (signedTx.message.compiledInstructions.length !== txObj.message.compiledInstructions.length) {
-          throw new Error("Signed versioned transaction altered instruction count during wallet signing");
-        }
+      // 6. Complete Post-Wallet Signing Message Integrity Validation:
+      // Verify message bytes match bit-for-bit, excluding signatures.
+      // Detects modifications to accounts, instructions, data, program IDs, ALTs, and recent blockhash.
+      const postSignCheck = verifyPostSigningMessageIntegrity(txObj, signedTx);
+      if (!postSignCheck.isValid) {
+        setIsTampered(true);
+        throw new Error(
+          `Post-Signing Integrity Violation! ${postSignCheck.error || "Transaction message was modified during signing."}. Signing was rejected and transaction was aborted.`,
+        );
       }
 
       // 7. Serialize signed transaction

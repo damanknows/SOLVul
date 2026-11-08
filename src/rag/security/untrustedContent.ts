@@ -45,6 +45,39 @@ export function sanitizeUntrustedContent(raw: string): string {
   return cleaned.trim();
 }
 
+/**
+ * Escapes attribute values to prevent quote-based injection, tag breakout,
+ * and XML attribute breakout within structural delimiters.
+ */
+export function escapeStructuralAttribute(val: unknown): string {
+  if (val === null || val === undefined) return "";
+  const str = String(val);
+  // Neutralize prompt-injection tokens and control characters
+  const sanitized = sanitizeUntrustedContent(str);
+  // XML/attribute character escaping: & -> &amp;, " -> &quot;, ' -> &#39;, < -> &lt;, > -> &gt;
+  return sanitized
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/**
+ * Sanitizes URLs to prevent javascript:, data:, or other dangerous schemes in structural attributes.
+ */
+export function sanitizeSourceUrl(url: unknown): string {
+  if (typeof url !== "string" || !url.trim()) return "unknown";
+  const trimmed = url.trim();
+  // Strip control characters and sanitize
+  const clean = sanitizeUntrustedContent(trimmed);
+  // Check for dangerous URL schemes
+  if (/^(?:javascript|data|vbscript|file):/i.test(clean.replace(/\s+/g, ""))) {
+    return "filtered:unsafe-scheme";
+  }
+  return escapeStructuralAttribute(clean);
+}
+
 export interface WrappedUntrustedExcerpt {
   documentId: string;
   title: string;
@@ -57,6 +90,7 @@ export interface WrappedUntrustedExcerpt {
 /**
  * Wraps a retrieved excerpt into an explicit untrusted reference container
  * with provenance tags and delimiters.
+ * All attributes are structurally escaped to prevent attribute-quote breakout and XML tag injection.
  */
 export function wrapUntrustedExcerpt(
   excerpt: string,
@@ -65,12 +99,13 @@ export function wrapUntrustedExcerpt(
   metadata?: { sourceUrl?: string; trustLevel?: string },
 ): WrappedUntrustedExcerpt {
   const sanitizedContent = sanitizeUntrustedContent(excerpt);
-  const sanitizedTitle = sanitizeUntrustedContent(title);
-  const trustLevel = metadata?.trustLevel || "unverified";
-  const sourceUrl = metadata?.sourceUrl || "unknown";
+  const escapedDocId = escapeStructuralAttribute(docId);
+  const escapedTitle = escapeStructuralAttribute(title);
+  const trustLevel = escapeStructuralAttribute(metadata?.trustLevel || "unverified");
+  const sourceUrl = sanitizeSourceUrl(metadata?.sourceUrl);
 
   const delimitedText = [
-    `<UNTRUSTED_EVIDENCE_EXCERPT id="${sanitizeUntrustedContent(docId)}" title="${sanitizedTitle}" trust_level="${trustLevel}" source="${sourceUrl}">`,
+    `<UNTRUSTED_EVIDENCE_EXCERPT id="${escapedDocId}" title="${escapedTitle}" trust_level="${trustLevel}" source="${sourceUrl}">`,
     `[EVIDENCE_DATA_START]`,
     sanitizedContent,
     `[EVIDENCE_DATA_END]`,
@@ -78,8 +113,8 @@ export function wrapUntrustedExcerpt(
   ].join("\n");
 
   return {
-    documentId: docId,
-    title: sanitizedTitle,
+    documentId: escapedDocId,
+    title: escapedTitle,
     sourceUrl,
     trustLevel,
     content: sanitizedContent,
