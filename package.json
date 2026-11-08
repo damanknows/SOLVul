@@ -41,6 +41,9 @@
   },
   "overrides": {
     "jayson": "5.0.0",
-    "postcss": "8.5.32"
+    "postcss": "8.5.32",
+    "rpc-websockets": {
+      "uuid": "^8.3.2"
+    }
   }
 }
