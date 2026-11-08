@@ -3,6 +3,7 @@ import type { NextPage } from "next";
 import NavBar from "../components/NavBar";
 import LoadingSpinner from "../components/LoadingSpinner";
 import ResultCard from "../components/ResultCard";
+import JudgeQuickTour from "../components/JudgeQuickTour";
 import { useEffect, useState } from "react";
 import { Connection } from "@solana/web3.js";
 
@@ -30,8 +31,11 @@ const Overview: NextPage = () => {
   return (
     <>
       <NavBar />
-      <main className="max-w-4xl mx-auto p-6">
-        <h1 className="text-2xl font-bold mb-4">Vulture‑SVM Dashboard – Overview</h1>
+      <main className="max-w-4xl mx-auto p-6 space-y-6">
+        {/* Hackathon Judge Quick-Tour Banner */}
+        <JudgeQuickTour defaultExpanded={true} />
+
+        <h1 className="text-2xl font-bold">Vulture‑SVM Dashboard – Overview</h1>
         {loading && <LoadingSpinner />}
         {error && <p className="text-red-600">Error: {error}</p>}
         {!loading && !error && (

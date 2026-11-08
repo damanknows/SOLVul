@@ -7,8 +7,9 @@ import PreSigningFlow from "../components/PreSigningFlow";
 import AttackPlaygroundDrawer from "../components/AttackPlaygroundDrawer";
 import AttackPlaygroundQuickBar from "../components/AttackPlaygroundQuickBar";
 import GuardrailVerificationStrip from "../components/report/GuardrailVerificationStrip";
+import JudgeQuickTour from "../components/JudgeQuickTour";
 import type { GeneratedFixture } from "../../lib/solana/fixtures/liveGenerator";
-import type { AttackFixture } from "../../lib/solana/fixtures/attackPlayground";
+import { generateAttackFixture, type AttackFixture } from "../../lib/solana/fixtures/attackPlayground";
 import { useState, useEffect } from "react";
 import type { PublicKey } from "@solana/web3.js";
 
@@ -51,6 +52,15 @@ const Inspector: NextPage = () => {
     setSubmitted(true);
   };
 
+  const handleTourScenario = async (scenarioId: "assign-memo-injection") => {
+    try {
+      const fixture = await generateAttackFixture(scenarioId, phantomPubkey || undefined);
+      handleQuickFixture(fixture);
+    } catch (err) {
+      console.error("Failed to generate tour attack fixture:", err);
+    }
+  };
+
   const handleReset = () => {
     setTxInput("");
     setSubmitted(false);
@@ -61,6 +71,12 @@ const Inspector: NextPage = () => {
     <>
       <NavBar />
       <main className="max-w-4xl mx-auto p-6">
+        {/* Hackathon Judge Quick-Tour Banner */}
+        <JudgeQuickTour
+          onSelectScenario={handleTourScenario}
+          className="mb-6"
+        />
+
         {/* Interactive Attack Playground Quick-Launch Bar mounted at the top */}
         <AttackPlaygroundQuickBar
           onSelectFixture={handleQuickFixture}
