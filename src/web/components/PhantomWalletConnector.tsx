@@ -36,33 +36,39 @@ export default function PhantomWalletConnector() {
     try {
       await (window as any).solana.disconnect();
       setWalletAddress(null);
-    } catch (e) {
+    } catch {
       // ignore
     }
   };
 
   return (
-    <div className="flex flex-col items-center space-y-2 p-4 border rounded-md">
+    <div className="flex flex-col items-center space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-xl">
       {walletAddress ? (
-        <>
-          <p className="text-sm font-mono">Connected: {walletAddress.toBase58()}</p>
+        <div className="flex flex-col sm:flex-row items-center gap-3 w-full justify-between bg-white p-3 rounded-lg border border-slate-200">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>
+            <span className="text-xs text-slate-500 font-medium">Connected:</span>
+            <span className="text-xs font-mono font-bold text-slate-800 truncate max-w-[200px] sm:max-w-[260px]">
+              {walletAddress.toBase58()}
+            </span>
+          </div>
           <button
             onClick={disconnect}
-            className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+            className="px-3 py-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md border border-slate-300 transition-colors"
           >
             Disconnect
           </button>
-        </>
+        </div>
       ) : (
         <button
           onClick={connect}
-          className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
+          className="px-5 py-2.5 bg-gradient-to-r from-purple-600 via-indigo-600 to-indigo-700 hover:from-purple-700 hover:to-indigo-800 text-white text-sm font-semibold rounded-xl shadow-sm transition-all duration-150 flex items-center gap-2"
         >
-          Connect Phantom Wallet
+          <span>👻</span>
+          <span>Connect Phantom Wallet</span>
         </button>
       )}
-      {error && <p className="text-red-600 text-sm">{error}</p>}
+      {error && <p className="text-red-600 text-xs font-medium">{error}</p>}
     </div>
   );
 }
-

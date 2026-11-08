@@ -1,7 +1,6 @@
 // src/web/pages/inspector.tsx
 import type { NextPage } from "next";
 import NavBar from "../components/NavBar";
-import LoadingSpinner from "../components/LoadingSpinner";
 import ResultCard from "../components/ResultCard";
 import PreSigningFlow from "../components/PreSigningFlow";
 import AttackPlaygroundDrawer from "../components/AttackPlaygroundDrawer";

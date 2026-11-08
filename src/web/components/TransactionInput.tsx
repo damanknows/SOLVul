@@ -39,26 +39,27 @@ export default function TransactionInput() {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col space-y-2 p-4 border rounded-md">
-      <label className="font-medium">Base64 Serialized Unsigned Transaction</label>
+    <form onSubmit={handleSubmit} className="flex flex-col space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-xl">
+      <label className="text-xs font-bold text-slate-700">Base64 Serialized Unsigned Transaction</label>
       <textarea
         value={input}
         onChange={e => setInput(e.target.value)}
         placeholder="Enter base64 string…"
         rows={4}
-        className="p-2 border rounded resize-none"
+        className="p-3 border border-slate-300 rounded-lg font-mono text-xs bg-white resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
       />
       <button
         type="submit"
-        className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
+        className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm font-semibold rounded-lg shadow-xs transition-colors"
       >
         Validate Payload
       </button>
-      {error && <p className="text-red-600 text-sm">{error}</p>}
+      {error && <p className="text-red-600 text-xs font-semibold bg-red-50 p-2 rounded border border-red-200">{error}</p>}
       {decodedSize !== null && (
-        <p className="text-green-600 text-sm">Valid payload – {decodedSize} bytes</p>
+        <p className="text-emerald-700 text-xs font-semibold bg-emerald-50 p-2 rounded border border-emerald-200">
+          ✓ Valid payload – {decodedSize} bytes
+        </p>
       )}
     </form>
   );
 }
-

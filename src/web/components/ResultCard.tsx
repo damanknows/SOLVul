@@ -8,10 +8,9 @@ interface ResultCardProps {
 
 export default function ResultCard({ title, children }: ResultCardProps) {
   return (
-    <div className="border rounded-lg p-4 mb-4 shadow-sm bg-white">
-      <h3 className="text-lg font-semibold mb-2">{title}</h3>
-      <div className="text-sm text-gray-800">{children}</div>
+    <div className="border border-slate-200 rounded-xl p-5 mb-4 shadow-sm bg-white">
+      <h3 className="text-base font-bold text-slate-900 mb-3">{title}</h3>
+      <div className="text-sm text-slate-700">{children}</div>
     </div>
   );
 }
-
